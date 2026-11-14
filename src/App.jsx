@@ -1,16 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
-  Building2, Users, FileText, Plus, Trash2, Edit3,
+  Building2, Users, FileText, Trash2, Edit3,
   AlertTriangle, Check, BarChart2, Calendar, Search,
-  Shield, Wifi, WifiOff, Package, LogOut, Lock, Mail,
+  Shield, WifiOff, Package, LogOut, Lock, Mail,
   UserCheck, Layers, ClipboardList, CheckCircle2, Clock,
-  Filter, RotateCcw, Box, ChevronDown, ChevronUp, Info, Download,
+  RotateCcw, Box, ChevronDown, ChevronUp, Download,
   Folder, FolderOpen, RefreshCw, Cloud
 } from 'lucide-react';
 
-// ----------------------------------------------------------------------------
-// CONFIGURAZIONE DATABASE CLOUD SUPABASE (AGENZIA DAL BO)
-// ----------------------------------------------------------------------------
 const SUPABASE_URL = 'https://kzwnfaxucuhxaowisqpb.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_jFNMkXlQeH-50rJEWoKfEw_ebv3JcxN';
 
@@ -23,9 +20,7 @@ async function supabaseFetchAllStore() {
       'Content-Type': 'application/json'
     }
   });
-  if (!res.ok) {
-    throw new Error(`Errore lettura Supabase (${res.status})`);
-  }
+  if (!res.ok) throw new Error(`Errore lettura Supabase (${res.status})`);
   return await res.json();
 }
 
@@ -38,83 +33,69 @@ async function supabaseUpsertKey(key, data) {
       'Content-Type': 'application/json',
       Prefer: 'resolution=merge-duplicates,return=minimal'
     },
-    body: JSON.stringify([
-      {
-        key,
-        data,
-        updated_at: new Date().toISOString()
-      }
-    ])
+    body: JSON.stringify([{ key, data, updated_at: new Date().toISOString() }])
   });
-  if (!res.ok) {
-    throw new Error(`Errore salvataggio Supabase (${res.status})`);
-  }
+  if (!res.ok) throw new Error(`Errore salvataggio Supabase (${res.status})`);
 }
 
 function exportToExcelCSV(filename, headers, rows) {
   const escapeCell = (val) => {
     if (val === null || val === undefined) return '""';
-    const str = String(val).replace(/"/g, '""').replace(/\r?\n/g, ' ');
-    return `"${str}"`;
+    return `"${String(val).replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
   };
-
   const csvContent =
     '\uFEFF' +
-    [
-      headers.map(escapeCell).join(';'),
-      ...rows.map((row) => row.map(escapeCell).join(';'))
-    ].join('\r\n');
-
+    [headers.map(escapeCell).join(';'), ...rows.map((r) => r.map(escapeCell).join(';'))].join('\r\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  const dateTag = new Date().toISOString().slice(0, 10);
-  link.setAttribute('download', `${filename}_${dateTag}.csv`);
+  link.setAttribute('download', `${filename}_${new Date().toISOString().slice(0, 10)}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
 
-function toDateTimeLocal(isoOrLocaleStr) {
-  if (!isoOrLocaleStr) {
-    const now = new Date();
-    const offset = now.getTimezoneOffset() * 60000;
-    return new Date(now.getTime() - offset).toISOString().slice(0, 16);
-  }
-  const parsed = new Date(isoOrLocaleStr);
-  if (!isNaN(parsed.getTime())) {
-    const offset = parsed.getTimezoneOffset() * 60000;
-    return new Date(parsed.getTime() - offset).toISOString().slice(0, 16);
-  }
-  return '';
+function toDateTimeLocal(isoStr) {
+  const d = isoStr ? new Date(isoStr) : new Date();
+  if (isNaN(d.getTime())) return '';
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
-function formatDisplayDate(isoOrStr) {
-  if (!isoOrStr) return '';
-  const d = new Date(isoOrStr);
-  if (!isNaN(d.getTime())) {
-    return d.toLocaleString('it-IT', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  }
-  return isoOrStr;
+function formatDisplayDate(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return isoStr;
+  return d.toLocaleString('it-IT', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function matchItemNames(rawA, rawB) {
+  const clean = (s) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const a = clean(rawA);
+  const b = clean(rawB);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const stem = (s) => s.replace(/(i|e|o|a)$/, '');
+  const sa = stem(a);
+  const sb = stem(b);
+  if (sa.length >= 4 && sa === sb) return true;
+  if (a.length >= 5 && b.length >= 5 && (a.includes(b) || b.includes(a))) return true;
+  return false;
 }
 
 export default function App() {
-  const [isOnline, setIsOnline] = useState(true);
   const [cloudStatus, setCloudStatus] = useState('connecting');
   const [cloudErrorMsg, setCloudErrorMsg] = useState('');
   const [isInitialCloudLoaded, setIsInitialCloudLoaded] = useState(false);
-
-  // Evita che il polling sovrascriva dati mentre è in corso un salvataggio
-  const pendingSavesRef = useRef(0);
-  const lastMutationAtRef = useRef(0);
+  const pendingWritesRef = useRef(0);
+  const lastWriteTsRef = useRef(0);
 
   const [currentUser, setCurrentUser] = useState(() => {
     try {
@@ -134,7 +115,6 @@ export default function App() {
       role: 'office'
     }
   ]);
-
   const [companies, setCompanies] = useState([]);
   const [updates, setUpdates] = useState([]);
   const [clients, setClients] = useState([]);
@@ -145,16 +125,29 @@ export default function App() {
   const [activeUpdateId, setActiveUpdateId] = useState('');
   const [activeAgentYear, setActiveAgentYear] = useState('all');
 
+  const saveKeyToCloud = (key, data) => {
+    pendingWritesRef.current += 1;
+    lastWriteTsRef.current = Date.now();
+    setCloudStatus('saving');
+    supabaseUpsertKey(key, data)
+      .then(() => {
+        pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
+        if (pendingWritesRef.current === 0) setCloudStatus('synced');
+      })
+      .catch(() => {
+        pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
+        setCloudStatus('error');
+      });
+  };
+
   const loadFromCloud = async (isFirstLoad = false) => {
-    if (!isFirstLoad) {
-      if (pendingSavesRef.current > 0 || Date.now() - lastMutationAtRef.current < 4000) {
-        return;
-      }
+    if (!isFirstLoad && (pendingWritesRef.current > 0 || Date.now() - lastWriteTsRef.current < 4000)) {
+      return;
     }
     try {
       if (isFirstLoad) setCloudStatus('connecting');
       const rows = await supabaseFetchAllStore();
-      if (!isFirstLoad && (pendingSavesRef.current > 0 || Date.now() - lastMutationAtRef.current < 4000)) {
+      if (!isFirstLoad && (pendingWritesRef.current > 0 || Date.now() - lastWriteTsRef.current < 4000)) {
         return;
       }
       const map = {};
@@ -182,25 +175,19 @@ export default function App() {
       if (Array.isArray(map.deliveries)) setDeliveries(map.deliveries);
       if (Array.isArray(map.warehouse)) setWarehouseItems(map.warehouse);
 
-      setIsOnline(true);
       setCloudStatus('synced');
       setCloudErrorMsg('');
       if (isFirstLoad) setIsInitialCloudLoaded(true);
-    } catch (err) {
-      setIsOnline(false);
+    } catch {
       setCloudStatus('error');
-      setCloudErrorMsg(
-        'Connessione al database in attesa: verifica di aver eseguito la query SQL su Supabase.'
-      );
+      setCloudErrorMsg('Connessione al database in attesa: verifica la tabella app_store su Supabase.');
       if (isFirstLoad) setIsInitialCloudLoaded(true);
     }
   };
 
   useEffect(() => {
     loadFromCloud(true);
-    const interval = setInterval(() => {
-      loadFromCloud(false);
-    }, 8000);
+    const interval = setInterval(() => loadFromCloud(false), 10000);
     return () => clearInterval(interval);
   }, []);
 
@@ -210,25 +197,10 @@ export default function App() {
     } catch {}
   }, [currentUser]);
 
-  const persistKeyToCloud = (key, nextData) => {
-    pendingSavesRef.current += 1;
-    lastMutationAtRef.current = Date.now();
-    setCloudStatus('saving');
-    supabaseUpsertKey(key, nextData)
-      .then(() => {
-        pendingSavesRef.current = Math.max(0, pendingSavesRef.current - 1);
-        if (pendingSavesRef.current === 0) setCloudStatus('synced');
-      })
-      .catch(() => {
-        pendingSavesRef.current = Math.max(0, pendingSavesRef.current - 1);
-        setCloudStatus('error');
-      });
-  };
-
   const updateAgentsCloud = (updater) => {
     setAgents((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      persistKeyToCloud('agents', next);
+      saveKeyToCloud('agents', next);
       return next;
     });
   };
@@ -236,7 +208,7 @@ export default function App() {
   const updateCompaniesCloud = (updater) => {
     setCompanies((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      persistKeyToCloud('companies', next);
+      saveKeyToCloud('companies', next);
       return next;
     });
   };
@@ -244,7 +216,7 @@ export default function App() {
   const updateUpdatesCloud = (updater) => {
     setUpdates((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      persistKeyToCloud('updates', next);
+      saveKeyToCloud('updates', next);
       return next;
     });
   };
@@ -252,7 +224,7 @@ export default function App() {
   const updateClientsCloud = (updater) => {
     setClients((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      persistKeyToCloud('clients', next);
+      saveKeyToCloud('clients', next);
       return next;
     });
   };
@@ -260,7 +232,7 @@ export default function App() {
   const updateDeliveriesCloud = (updater) => {
     setDeliveries((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      persistKeyToCloud('deliveries', next);
+      saveKeyToCloud('deliveries', next);
       return next;
     });
   };
@@ -268,7 +240,7 @@ export default function App() {
   const updateWarehouseCloud = (updater) => {
     setWarehouseItems((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      persistKeyToCloud('warehouse', next);
+      saveKeyToCloud('warehouse', next);
       return next;
     });
   };
@@ -285,8 +257,7 @@ export default function App() {
     if (activeCompanyId) {
       const companyUpdates = updates.filter((u) => {
         const updYear = String(u.year || new Date().getFullYear());
-        const matchYear = activeAgentYear === 'all' || updYear === activeAgentYear;
-        return u.companyId === activeCompanyId && matchYear;
+        return u.companyId === activeCompanyId && (activeAgentYear === 'all' || updYear === activeAgentYear);
       });
       if (companyUpdates.length > 0) {
         if (!companyUpdates.find((u) => u.id === activeUpdateId)) {
@@ -311,10 +282,6 @@ export default function App() {
     return { success: false, error: 'Email o password non corretti. Riprova.' };
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-  };
-
   const buildDefaultDeliveredMaterials = (updateObj, kitQuantity) => {
     if (!updateObj || !Array.isArray(updateObj.contentItems) || updateObj.contentItems.length === 0) {
       return [];
@@ -327,54 +294,24 @@ export default function App() {
     }));
   };
 
-  // Scarico/ripristino magazzino con corrispondenza flessibile sui nomi materiali
   const applyDeliveryToWarehouse = (companyId, updateObj, materialsList, kitQty, direction = -1) => {
-    const normalizeWords = (str) =>
-      (str || '')
-        .toLowerCase()
-        .replace(/[^a-z0-9àèéìòù\s]/gi, ' ')
-        .split(/\s+/)
-        .filter((w) => w.length >= 3)
-        .map((w) => w.replace(/(i|e|o|a)$/, ''));
-
-    const isMatchingName = (rawA, rawB) => {
-      const a = (rawA || '').trim().toLowerCase();
-      const b = (rawB || '').trim().toLowerCase();
-      if (!a || !b) return false;
-      if (a === b) return true;
-      if (a.length >= 4 && b.includes(a)) return true;
-      if (b.length >= 4 && a.includes(b)) return true;
-
-      const wordsA = normalizeWords(a);
-      const wordsB = normalizeWords(b);
-      if (wordsA.length === 0 || wordsB.length === 0) return false;
-      const common = wordsA.filter((w) => wordsB.includes(w));
-      const minLen = Math.min(wordsA.length, wordsB.length);
-      return common.length >= minLen && common.length > 0;
-    };
-
     const safeKitQty = Math.max(1, Number(kitQty) || 1);
     const itemsToAdjust = [];
 
     if (Array.isArray(materialsList) && materialsList.length > 0) {
       materialsList.forEach((m) => {
-        const q = Number(m.deliveredQty);
-        if (q > 0) {
-          itemsToAdjust.push({
-            name: m.name,
-            qty: q
-          });
-        }
+        itemsToAdjust.push({ name: m.name, qty: Number(m.deliveredQty) || 0 });
+      });
+    } else if (updateObj && Array.isArray(updateObj.contentItems)) {
+      updateObj.contentItems.forEach((it) => {
+        itemsToAdjust.push({ name: it.name, qty: (Number(it.qty) || 1) * safeKitQty });
       });
     }
 
     if (updateObj && updateObj.title) {
-      const alreadyIncluded = itemsToAdjust.some((it) => isMatchingName(it.name, updateObj.title));
+      const alreadyIncluded = itemsToAdjust.some((it) => matchItemNames(it.name, updateObj.title));
       if (!alreadyIncluded) {
-        itemsToAdjust.push({
-          name: updateObj.title,
-          qty: safeKitQty
-        });
+        itemsToAdjust.push({ name: updateObj.title, qty: safeKitQty });
       }
     }
 
@@ -383,14 +320,11 @@ export default function App() {
     updateWarehouseCloud((prev) =>
       prev.map((wItem) => {
         if (!wItem.name || !wItem.name.trim()) return wItem;
-
-        if (wItem.companyId && companyId && wItem.companyId !== companyId) {
-          return wItem;
-        }
+        if (wItem.companyId && companyId && wItem.companyId !== companyId) return wItem;
 
         let deltaTotal = 0;
         itemsToAdjust.forEach((adj) => {
-          if (isMatchingName(adj.name, wItem.name)) {
+          if (matchItemNames(adj.name, wItem.name)) {
             deltaTotal += (Number(adj.qty) || 0) * direction;
           }
         });
@@ -415,13 +349,7 @@ export default function App() {
     if (existingIndex >= 0) {
       const existingRec = deliveries[existingIndex];
       const compId = existingRec.companyId || (updateObj ? updateObj.companyId : activeCompanyId);
-      applyDeliveryToWarehouse(
-        compId,
-        updateObj,
-        existingRec.deliveredMaterials,
-        existingRec.quantity,
-        +1
-      );
+      applyDeliveryToWarehouse(compId, updateObj, existingRec.deliveredMaterials, existingRec.quantity, +1);
       const updated = [...deliveries];
       updated.splice(existingIndex, 1);
       updateDeliveriesCloud(updated);
@@ -476,47 +404,38 @@ export default function App() {
         ? deliveredMaterials
         : buildDefaultDeliveredMaterials(updateObj, safeQty);
 
-    const hasMaterialQtyVariation = finalMaterials.some(
+    const hasMaterialQtyDiff = finalMaterials.some(
       (m) => Number(m.deliveredQty) !== (Number(m.unitQty) || 1) * expectedQty
     );
-    const isKitQtyModified = safeQty !== expectedQty;
-    const isAnyQtyModified = isKitQtyModified || hasMaterialQtyVariation;
-    const effectiveAlert = !!alert || isAnyQtyModified;
+    const isQtyModified = safeQty !== expectedQty || hasMaterialQtyDiff;
+    const effectiveAlert = !!alert || isQtyModified;
 
-    const autoVariationSummary = hasMaterialQtyVariation && !isKitQtyModified
-      ? `Modifica materiali: ${finalMaterials
-          .map((m) => `${m.deliveredQty}x ${m.name} (previsti ${(Number(m.unitQty) || 1) * expectedQty})`)
-          .join(', ')}`
+    const customMatSummary = hasMaterialQtyDiff
+      ? finalMaterials.map((m) => `${m.deliveredQty}x ${m.name}`).join(', ')
       : '';
-    const finalNotes = [notes, autoVariationSummary].filter(Boolean).join(' — ');
+    const autoNote =
+      isQtyModified && !notes?.trim()
+        ? customMatSummary
+          ? `Variazione quantità consegnata (${safeQty} kit: ${customMatSummary})`
+          : `Variazione quantità kit: consegnati ${safeQty} invece di ${expectedQty}`
+        : notes || '';
 
     if (existingIndex >= 0) {
       const updated = [...deliveries];
       const prevRec = updated[existingIndex];
-      applyDeliveryToWarehouse(
-        compId,
-        updateObj,
-        prevRec.deliveredMaterials,
-        prevRec.quantity,
-        +1
-      );
+      applyDeliveryToWarehouse(compId, updateObj, prevRec.deliveredMaterials, prevRec.quantity, +1);
       applyDeliveryToWarehouse(compId, updateObj, finalMaterials, safeQty, -1);
-
-      const qtyChangedFromPrev =
-        prevRec.quantity !== safeQty ||
-        JSON.stringify(prevRec.deliveredMaterials || []) !== JSON.stringify(finalMaterials);
 
       updated[existingIndex] = {
         ...prevRec,
         delivered: true,
         quantity: safeQty,
         expectedQuantityAtDelivery: expectedQty,
-        qtyVariationAlert: isKitQtyModified,
-        materialVariationAlert: hasMaterialQtyVariation,
+        qtyVariationAlert: isQtyModified,
         deliveredMaterials: finalMaterials,
-        notes: finalNotes,
+        notes: autoNote,
         alert: effectiveAlert,
-        alertResolved: effectiveAlert ? (qtyChangedFromPrev ? false : prevRec.alertResolved) : false,
+        alertResolved: effectiveAlert ? false : prevRec.alertResolved,
         deliveredAt: dateIso
       };
       updateDeliveriesCloud(updated);
@@ -531,10 +450,9 @@ export default function App() {
         deliveredAt: dateIso,
         quantity: safeQty,
         expectedQuantityAtDelivery: expectedQty,
-        qtyVariationAlert: isKitQtyModified,
-        materialVariationAlert: hasMaterialQtyVariation,
+        qtyVariationAlert: isQtyModified,
         deliveredMaterials: finalMaterials,
-        notes: finalNotes,
+        notes: autoNote,
         alert: effectiveAlert,
         alertResolved: false
       };
@@ -563,7 +481,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-slate-100 text-slate-800 font-sans flex flex-col">
+    <div className="min-h-screen bg-slate-100 text-slate-800 font-sans flex flex-col">
       <header className="bg-slate-900 text-white shadow-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-3 sm:px-4 py-3 flex justify-between items-center gap-2">
           <div className="flex items-center space-x-2.5 min-w-0">
@@ -586,8 +504,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => loadFromCloud(false)}
-              title="Clicca per aggiornare subito i dati dal Cloud"
-              className={`flex items-center space-x-1.5 px-2.5 sm:px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              title="Aggiorna subito dal Cloud"
+              className={`flex items-center space-x-1.5 px-2.5 sm:px-3 py-1 rounded-full text-xs font-medium ${
                 cloudStatus === 'error'
                   ? 'bg-rose-900/70 text-rose-200 border border-rose-700'
                   : cloudStatus === 'saving'
@@ -620,9 +538,8 @@ export default function App() {
               </div>
               <button
                 type="button"
-                onClick={handleLogout}
+                onClick={() => setCurrentUser(null)}
                 className="p-1.5 bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg text-xs font-semibold flex items-center space-x-1"
-                title="Disconnetti"
               >
                 <LogOut className="w-4 h-4" />
                 <span className="hidden sm:inline">Esci</span>
@@ -632,7 +549,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 py-4 sm:p-6 overflow-x-hidden">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 py-4 sm:p-6">
         {currentUser.role === 'agent' ? (
           <AgentView
             currentUser={currentUser}
@@ -675,9 +592,6 @@ export default function App() {
   );
 }
 
-// ----------------------------------------------------------------------------
-// SCHERMATA DI LOGIN
-// ----------------------------------------------------------------------------
 function LoginScreen({ onLogin, cloudStatus, cloudErrorMsg }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -687,14 +601,12 @@ function LoginScreen({ onLogin, cloudStatus, cloudErrorMsg }) {
     e.preventDefault();
     setError('');
     const res = onLogin(email, password);
-    if (!res.success) {
-      setError(res.error);
-    }
+    if (!res.success) setError(res.error);
   };
 
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden space-y-6 p-6 md:p-8">
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl space-y-6 p-6 md:p-8">
         <div className="text-center space-y-2">
           <div className="bg-indigo-600 w-12 h-12 rounded-xl flex items-center justify-center mx-auto shadow-md">
             <Building2 className="w-7 h-7 text-white" />
@@ -756,7 +668,7 @@ function LoginScreen({ onLogin, cloudStatus, cloudErrorMsg }) {
 
           <button
             type="submit"
-            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-xl transition-colors shadow-md"
+            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-xl shadow-md"
           >
             Accedi
           </button>
@@ -769,9 +681,7 @@ function LoginScreen({ onLogin, cloudStatus, cloudErrorMsg }) {
             }`}
           />
           <span>
-            {cloudStatus === 'synced'
-              ? 'Database Cloud Connesso'
-              : 'Verifica connessione database...'}
+            {cloudStatus === 'synced' ? 'Database Cloud Connesso' : 'Verifica connessione...'}
           </span>
         </div>
       </div>
@@ -779,9 +689,6 @@ function LoginScreen({ onLogin, cloudStatus, cloudErrorMsg }) {
   );
 }
 
-// ----------------------------------------------------------------------------
-// VISTA AGENTE
-// ----------------------------------------------------------------------------
 function AgentView({
   currentUser,
   companies,
@@ -801,9 +708,7 @@ function AgentView({
 
   const availableYears = useMemo(() => {
     const yearsSet = new Set();
-    updates.forEach((u) => {
-      yearsSet.add(String(u.year || new Date().getFullYear()));
-    });
+    updates.forEach((u) => yearsSet.add(String(u.year || new Date().getFullYear())));
     return Array.from(yearsSet).sort((a, b) => Number(b) - Number(a));
   }, [updates]);
 
@@ -823,8 +728,7 @@ function AgentView({
     () =>
       updates.filter((u) => {
         const updYear = String(u.year || new Date().getFullYear());
-        const matchYear = activeYear === 'all' || updYear === activeYear;
-        return u.companyId === activeCompanyId && matchYear;
+        return u.companyId === activeCompanyId && (activeYear === 'all' || updYear === activeYear);
       }),
     [updates, activeCompanyId, activeYear]
   );
@@ -844,7 +748,7 @@ function AgentView({
     agentClients.length > 0 ? Math.round((completedCount / agentClients.length) * 100) : 0;
 
   return (
-    <div className="space-y-5 max-w-full overflow-x-hidden">
+    <div className="space-y-5">
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-3 min-w-0">
           <div className="bg-indigo-600 p-2.5 rounded-full text-white shadow-sm flex-shrink-0">
@@ -852,20 +756,20 @@ function AgentView({
           </div>
           <div className="min-w-0">
             <h2 className="font-bold text-slate-900 text-base truncate">{currentUser.name}</h2>
-            <p className="text-xs text-slate-400 break-words">
+            <p className="text-xs text-slate-400">
               I tuoi clienti assegnati e aggiornamenti da consegnare
             </p>
           </div>
         </div>
 
-        <div className="bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex items-center space-x-2.5 ml-auto sm:ml-0">
+        <div className="bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 flex items-center space-x-2.5">
           <div className="text-right">
             <div className="text-[10px] text-slate-500 font-bold uppercase">Completamento</div>
             <div className="text-xs font-bold text-slate-800">
               {completedCount} / {agentClients.length} Clienti
             </div>
           </div>
-          <div className="w-9 h-9 rounded-full border-4 border-indigo-600 flex items-center justify-center text-xs font-bold text-indigo-600 flex-shrink-0">
+          <div className="w-9 h-9 rounded-full border-4 border-indigo-600 flex items-center justify-center text-xs font-bold text-indigo-600">
             {progressPct}%
           </div>
         </div>
@@ -877,7 +781,7 @@ function AgentView({
         </h2>
         {companies.length === 0 ? (
           <div className="bg-amber-50 border border-amber-200 text-amber-800 p-4 rounded-xl text-sm">
-            Nessuna azienda disponibile. Attendi l'inserimento delle mandanti da parte della Sede.
+            Nessuna azienda disponibile. Attendi l'inserimento da parte della Sede.
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
@@ -887,10 +791,10 @@ function AgentView({
                 <button
                   key={comp.id}
                   onClick={() => setActiveCompanyId(comp.id)}
-                  className={`p-3.5 rounded-xl border text-left transition-all font-semibold text-sm flex items-center justify-between ${
+                  className={`p-3.5 rounded-xl border text-left font-semibold text-sm flex items-center justify-between ${
                     isActive
                       ? 'bg-slate-900 border-slate-900 text-white shadow-md'
-                      : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
                   }`}
                 >
                   <span className="truncate">{comp.name}</span>
@@ -904,41 +808,23 @@ function AgentView({
 
       {activeCompanyId && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-3.5 sm:p-4 space-y-3.5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
-            <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider break-words">
-              2. Seleziona Aggiornamento / Catalogo
-            </h2>
-            <span className="text-[11px] text-slate-400 break-words">
-              Filtra per anno e scegli il catalogo
-            </span>
-          </div>
+          <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+            2. Seleziona Aggiornamento / Catalogo
+          </h2>
 
           {availableYears.length > 0 && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <button
                 type="button"
                 onClick={() => setActiveYear('all')}
-                className={`p-2.5 rounded-xl border text-left transition-all flex items-center justify-between gap-1 min-w-0 ${
+                className={`p-2.5 rounded-xl border text-left flex items-center justify-between ${
                   activeYear === 'all'
-                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
-                    : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                    ? 'bg-indigo-600 border-indigo-600 text-white'
+                    : 'bg-slate-50 border-slate-200 text-slate-700'
                 }`}
               >
-                <div className="flex items-center space-x-1.5 min-w-0">
-                  <FolderOpen
-                    className={`w-4 h-4 flex-shrink-0 ${
-                      activeYear === 'all' ? 'text-white' : 'text-indigo-600'
-                    }`}
-                  />
-                  <span className="font-bold text-xs truncate">Tutti gli Anni</span>
-                </div>
-                <span
-                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 ${
-                    activeYear === 'all'
-                      ? 'bg-indigo-500 text-white'
-                      : 'bg-slate-200 text-slate-600'
-                  }`}
-                >
+                <span className="font-bold text-xs">Tutti gli Anni</span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/10">
                   {updates.filter((u) => u.companyId === activeCompanyId).length}
                 </span>
               </button>
@@ -955,27 +841,14 @@ function AgentView({
                     key={yr}
                     type="button"
                     onClick={() => setActiveYear(yr)}
-                    className={`p-2.5 rounded-xl border text-left transition-all flex items-center justify-between gap-1 min-w-0 ${
+                    className={`p-2.5 rounded-xl border text-left flex items-center justify-between ${
                       isSelected
-                        ? 'bg-slate-900 border-slate-900 text-white shadow-sm'
-                        : 'bg-amber-50/60 border-amber-200 text-amber-950 hover:bg-amber-100/70'
+                        ? 'bg-slate-900 border-slate-900 text-white'
+                        : 'bg-amber-50/60 border-amber-200 text-amber-950'
                     }`}
                   >
-                    <div className="flex items-center space-x-1.5 min-w-0">
-                      {isSelected ? (
-                        <FolderOpen className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                      ) : (
-                        <Folder className="w-4 h-4 text-amber-500 flex-shrink-0" />
-                      )}
-                      <span className="font-bold text-xs truncate">Anno {yr}</span>
-                    </div>
-                    <span
-                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 ${
-                        isSelected
-                          ? 'bg-slate-800 text-amber-300'
-                          : 'bg-amber-200/80 text-amber-900'
-                      }`}
-                    >
+                    <span className="font-bold text-xs">Anno {yr}</span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/10">
                       {countInYear}
                     </span>
                   </button>
@@ -986,68 +859,53 @@ function AgentView({
 
           {companyUpdates.length === 0 ? (
             <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-xl text-sm">
-              Nessun aggiornamento attivo in questa cartella/anno per l'azienda selezionata.
+              Nessun aggiornamento attivo in questa cartella.
             </div>
           ) : (
             <>
               <div className="flex flex-wrap gap-2">
                 {companyUpdates.map((upd) => {
                   const isSelected = currentUpdate && upd.id === currentUpdate.id;
-                  const updYear = upd.year || new Date().getFullYear();
                   return (
                     <button
                       key={upd.id}
                       onClick={() => setActiveUpdateId(upd.id)}
-                      className={`px-4 py-2.5 rounded-xl text-sm font-semibold border transition-all flex items-center space-x-2 ${
+                      className={`px-4 py-2.5 rounded-xl text-sm font-semibold border flex items-center space-x-2 ${
                         isSelected
                           ? 'bg-indigo-600 border-indigo-600 text-white shadow'
-                          : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                          : 'bg-slate-50 border-slate-200 text-slate-700'
                       }`}
                     >
                       <FileText className="w-4 h-4" />
                       <span>{upd.title}</span>
-                      <span
-                        className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
-                          isSelected
-                            ? 'bg-indigo-500 text-white'
-                            : 'bg-slate-200 text-slate-600'
-                        }`}
-                      >
-                        {updYear}
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/10 font-bold">
+                        {upd.year || new Date().getFullYear()}
                       </span>
-                      {isSelected && <Check className="w-4 h-4 ml-1" />}
                     </button>
                   );
                 })}
               </div>
 
               {currentUpdate && (
-                <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-start space-x-2.5">
-                    <Layers className="w-4 h-4 text-indigo-600 mt-0.5 flex-shrink-0" />
-                    <div>
-                      <div className="text-xs font-bold text-indigo-950">
-                        Contenuto Standard (1 Kit = {currentUpdate.title}):
-                      </div>
-                      {Array.isArray(currentUpdate.contentItems) &&
-                      currentUpdate.contentItems.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5 mt-1.5">
-                          {currentUpdate.contentItems.map((item) => (
-                            <span
-                              key={item.id}
-                              className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold bg-white text-indigo-700 border border-indigo-200 shadow-2xs"
-                            >
-                              {item.qty}x {item.name}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-indigo-700/80 mt-0.5">
-                          Aggiornamento standard (nessun sotto-elemento specificato dalla Sede)
-                        </p>
-                      )}
-                    </div>
+                <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-3.5">
+                  <div className="text-xs font-bold text-indigo-950">
+                    Contenuto Standard (1 Kit = {currentUpdate.title}):
                   </div>
+                  {Array.isArray(currentUpdate.contentItems) &&
+                  currentUpdate.contentItems.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {currentUpdate.contentItems.map((item) => (
+                        <span
+                          key={item.id}
+                          className="px-2.5 py-0.5 rounded-md text-xs font-semibold bg-white text-indigo-700 border border-indigo-200"
+                        >
+                          {item.qty}x {item.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-indigo-700/80 mt-0.5">Aggiornamento standard</p>
+                  )}
                 </div>
               )}
             </>
@@ -1061,10 +919,9 @@ function AgentView({
             <div>
               <h2 className="text-sm font-bold text-slate-800">3. Elenco Clienti da Servire</h2>
               <p className="text-xs text-slate-400">
-                Spunta il cliente per consegna standard oppure apri "Dettagli / Materiali" e premi "Conferma & Salva"
+                Spunta il cliente o apri i dettagli per modificare le quantità (invia alert automatico alla Sede)
               </p>
             </div>
-
             <div className="relative w-full sm:w-64">
               <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
               <input
@@ -1072,23 +929,18 @@ function AgentView({
                 placeholder="Cerca cliente o prov..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
               />
             </div>
           </div>
 
           {!currentUpdate ? (
             <div className="text-center py-8 text-slate-400 text-sm">
-              Seleziona un aggiornamento attivo per visualizzare la lista clienti.
+              Seleziona un aggiornamento attivo per visualizzare i clienti.
             </div>
           ) : agentClients.length === 0 ? (
-            <div className="text-center py-8 text-slate-400 text-sm space-y-1">
-              <p className="font-semibold text-slate-600">
-                Nessun cliente assegnato per questa azienda.
-              </p>
-              <p className="text-xs">
-                Verifica in Sede che il cliente sia associato al tuo profilo e a questa mandante.
-              </p>
+            <div className="text-center py-8 text-slate-400 text-sm">
+              Nessun cliente assegnato per questa azienda.
             </div>
           ) : (
             <div className="divide-y divide-slate-100">
@@ -1096,10 +948,9 @@ function AgentView({
                 const delivery = deliveries.find(
                   (d) => d.clientId === client.id && d.updateId === currentUpdate.id && d.delivered
                 );
-                const companyConfig = client.companyConfigs
-                  ? client.companyConfigs[activeCompanyId]
-                  : null;
-                const defaultTargetQty = companyConfig ? Math.max(1, Number(companyConfig.quantity) || 1) : 1;
+                const defaultTargetQty = client.companyConfigs?.[activeCompanyId]?.quantity
+                  ? Math.max(1, Number(client.companyConfigs[activeCompanyId].quantity) || 1)
+                  : 1;
 
                 return (
                   <ClientDeliveryRow
@@ -1108,9 +959,7 @@ function AgentView({
                     currentUpdate={currentUpdate}
                     delivery={delivery}
                     defaultTargetQty={defaultTargetQty}
-                    onToggle={() =>
-                      onToggleDelivery(client.id, currentUpdate.id, defaultTargetQty)
-                    }
+                    onToggle={() => onToggleDelivery(client.id, currentUpdate.id, defaultTargetQty)}
                     onSaveDetails={(qty, deliveredMaterials, notes, alert, dateIso) =>
                       onUpdateDeliveryDetails(
                         client.id,
@@ -1133,7 +982,6 @@ function AgentView({
   );
 }
 
-// Singola Riga Cliente nella Vista Agente
 function ClientDeliveryRow({
   client,
   currentUpdate,
@@ -1161,20 +1009,20 @@ function ClientDeliveryRow({
     setCustomDateLocal(delivery ? toDateTimeLocal(delivery.deliveredAt) : toDateTimeLocal());
 
     if (hasContentItems) {
-      const mapped = currentUpdate.contentItems.map((item) => {
-        const existingMat = delivery?.deliveredMaterials?.find(
-          (m) => m.id === item.id || m.name === item.name
-        );
-        const unitQty = Number(item.qty) || 1;
-        return {
-          id: item.id,
-          name: item.name,
-          unitQty,
-          expectedTotal: unitQty * baseQty,
-          deliveredQty: existingMat ? Number(existingMat.deliveredQty) : unitQty * baseQty
-        };
-      });
-      setMaterialsState(mapped);
+      setMaterialsState(
+        currentUpdate.contentItems.map((item) => {
+          const existingMat = delivery?.deliveredMaterials?.find(
+            (m) => m.id === item.id || m.name === item.name
+          );
+          const unitQty = Number(item.qty) || 1;
+          return {
+            id: item.id,
+            name: item.name,
+            unitQty,
+            deliveredQty: existingMat ? Number(existingMat.deliveredQty) : unitQty * baseQty
+          };
+        })
+      );
     } else {
       setMaterialsState([]);
     }
@@ -1185,11 +1033,7 @@ function ClientDeliveryRow({
     setQuantity(safeKit);
     if (hasContentItems) {
       setMaterialsState((prev) =>
-        prev.map((m) => ({
-          ...m,
-          expectedTotal: m.unitQty * safeKit,
-          deliveredQty: m.unitQty * safeKit
-        }))
+        prev.map((m) => ({ ...m, deliveredQty: m.unitQty * safeKit }))
       );
     }
   };
@@ -1202,29 +1046,32 @@ function ClientDeliveryRow({
     );
   };
 
+  const hasMaterialDiff = materialsState.some(
+    (m) => m.deliveredQty !== m.unitQty * defaultTargetQty
+  );
+  const isQtyDifferentFromExpected = quantity !== defaultTargetQty || hasMaterialDiff;
+
   const handleSave = () => {
     const isoDate = customDateLocal
       ? new Date(customDateLocal).toISOString()
       : new Date().toISOString();
-
-    const cleanedMaterials = materialsState.map((m) => ({
-      id: m.id,
-      name: m.name,
-      unitQty: m.unitQty,
-      deliveredQty: m.deliveredQty
-    }));
-
-    onSaveDetails(quantity, cleanedMaterials, notes, alert, isoDate);
+    onSaveDetails(
+      quantity,
+      materialsState.map((m) => ({
+        id: m.id,
+        name: m.name,
+        unitQty: m.unitQty,
+        deliveredQty: m.deliveredQty
+      })),
+      notes,
+      alert || isQtyDifferentFromExpected,
+      isoDate
+    );
     setSavedBadge(true);
-    setTimeout(() => setSavedBadge(false), 2500);
+    setTimeout(() => setSavedBadge(false), 2000);
   };
 
   const isDelivered = !!delivery;
-  const isKitQtyDifferent = quantity !== defaultTargetQty;
-  const isAnyMaterialDifferent = materialsState.some(
-    (m) => Number(m.deliveredQty) !== (Number(m.unitQty) || 1) * defaultTargetQty
-  );
-  const willTriggerAutoAlert = isKitQtyDifferent || isAnyMaterialDifferent;
 
   return (
     <div className="py-3.5 space-y-3">
@@ -1233,10 +1080,10 @@ function ClientDeliveryRow({
           <button
             type="button"
             onClick={onToggle}
-            className={`mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center transition-all border flex-shrink-0 ${
+            className={`mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center border flex-shrink-0 ${
               isDelivered
-                ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm'
-                : 'border-slate-300 bg-white hover:border-indigo-400'
+                ? 'bg-emerald-500 border-emerald-500 text-white'
+                : 'border-slate-300 bg-white'
             }`}
           >
             {isDelivered && <Check className="w-4 h-4 stroke-[3]" />}
@@ -1245,39 +1092,34 @@ function ClientDeliveryRow({
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-1.5">
               <span
-                className={`font-bold text-sm break-words ${
+                className={`font-bold text-sm ${
                   isDelivered ? 'line-through text-slate-500' : 'text-slate-900'
                 }`}
               >
                 {client.name}
               </span>
-
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
-                <Package className="w-3 h-3 mr-1 flex-shrink-0" />
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
                 Spettanti: {defaultTargetQty}
               </span>
-
               {delivery?.alert && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                  <AlertTriangle className="w-3 h-3 mr-1 flex-shrink-0" />
-                  Alert
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                  Alert Sede
                 </span>
               )}
             </div>
 
-            <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
+            <div className="text-xs text-slate-400 flex flex-wrap items-center gap-3 mt-1">
               <span>
                 Prov: <strong className="text-slate-600">{client.province}</strong>
               </span>
               {isDelivered && (
-                <span className="text-emerald-600 font-medium flex items-center">
-                  <Calendar className="w-3 h-3 mr-1 flex-shrink-0" />
+                <span className="text-emerald-600 font-medium">
                   {formatDisplayDate(delivery.deliveredAt)}
                 </span>
               )}
             </div>
 
-            {isDelivered && delivery.deliveredMaterials && delivery.deliveredMaterials.length > 0 && (
+            {isDelivered && delivery.deliveredMaterials?.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-1.5">
                 {delivery.deliveredMaterials.map((mat, idx) => (
                   <span
@@ -1295,7 +1137,7 @@ function ClientDeliveryRow({
         <button
           type="button"
           onClick={() => setShowDetails(!showDetails)}
-          className="self-start sm:self-center ml-9 sm:ml-0 text-xs font-semibold text-indigo-600 hover:text-indigo-800 bg-indigo-50/70 sm:bg-transparent px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 flex items-center space-x-1 flex-shrink-0"
+          className="self-start sm:self-center text-xs font-semibold text-indigo-600 bg-indigo-50 px-2.5 py-1.5 rounded-lg flex items-center space-x-1"
         >
           <span>{showDetails ? 'Chiudi' : 'Dettagli / Materiali'}</span>
           {showDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -1306,14 +1148,12 @@ function ClientDeliveryRow({
         <div className="bg-slate-50 p-3 sm:p-4 rounded-xl border border-slate-200 space-y-4 text-xs sm:ml-9">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-slate-600 font-bold mb-1">
-                Data & Ora Consegna
-              </label>
+              <label className="block text-slate-600 font-bold mb-1">Data & Ora Consegna</label>
               <input
                 type="datetime-local"
                 value={customDateLocal}
                 onChange={(e) => setCustomDateLocal(e.target.value)}
-                className="w-full max-w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
+                className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
               />
             </div>
 
@@ -1325,126 +1165,96 @@ function ClientDeliveryRow({
                 <button
                   type="button"
                   onClick={() => handleKitQuantityChange(quantity - 1)}
-                  className="w-8 h-8 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 hover:bg-slate-100"
+                  className="w-8 h-8 bg-white border border-slate-200 rounded-lg font-bold"
                 >
                   -
                 </button>
-                <span className="font-bold text-sm text-slate-900 px-3">{quantity}</span>
+                <span className="font-bold text-sm px-3">{quantity}</span>
                 <button
                   type="button"
                   onClick={() => handleKitQuantityChange(quantity + 1)}
-                  className="w-8 h-8 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 hover:bg-slate-100"
+                  className="w-8 h-8 bg-white border border-slate-200 rounded-lg font-bold"
                 >
                   +
                 </button>
-                <span className="text-[11px] text-slate-400 ml-1">
-                  (Spettanti: {defaultTargetQty})
-                </span>
+                <span className="text-[11px] text-slate-400">(Spettanti: {defaultTargetQty})</span>
               </div>
             </div>
           </div>
 
           {hasContentItems && (
-            <div className="bg-white p-3 rounded-xl border border-slate-200 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-slate-700 text-xs flex items-center">
-                  <Layers className="w-3.5 h-3.5 mr-1.5 text-indigo-600" />
-                  Dettaglio Singoli Materiali Consegnati al Cliente
-                </span>
-                <span className="text-[10px] text-slate-400">
-                  Modificabile singolarmente
-                </span>
+            <div className="bg-white p-3 rounded-xl border border-slate-200 space-y-2">
+              <div className="font-bold text-slate-700 text-xs">
+                Singoli Materiali Consegnati
               </div>
-
               <div className="divide-y divide-slate-100">
-                {materialsState.map((mat) => {
-                  const isCustomDiff = mat.deliveredQty !== mat.unitQty * defaultTargetQty;
-                  return (
-                    <div
-                      key={mat.id}
-                      className="py-2 flex items-center justify-between gap-2"
-                    >
-                      <div className="min-w-0">
-                        <span className="font-bold text-slate-800 break-words">{mat.name}</span>
-                        <span className="text-[10px] text-slate-400 block sm:inline sm:ml-1.5">
-                          ({mat.unitQty} per kit)
-                        </span>
-                        {isCustomDiff && (
-                          <span className="inline-block mt-0.5 sm:mt-0 sm:ml-2 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
-                            Modificato
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center space-x-2 flex-shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleSingleMaterialChange(mat.id, -1)}
-                          className="w-7 h-7 bg-slate-100 hover:bg-slate-200 rounded-lg font-bold text-slate-700"
-                        >
-                          -
-                        </button>
-                        <span className="font-black text-slate-900 w-6 text-center">
-                          {mat.deliveredQty}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleSingleMaterialChange(mat.id, 1)}
-                          className="w-7 h-7 bg-slate-100 hover:bg-slate-200 rounded-lg font-bold text-slate-700"
-                        >
-                          +
-                        </button>
-                      </div>
+                {materialsState.map((mat) => (
+                  <div key={mat.id} className="py-2 flex items-center justify-between gap-2">
+                    <div>
+                      <span className="font-bold text-slate-800">{mat.name}</span>
+                      <span className="text-[10px] text-slate-400 ml-1.5">
+                        ({mat.unitQty} per kit)
+                      </span>
                     </div>
-                  );
-                })}
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSingleMaterialChange(mat.id, -1)}
+                        className="w-7 h-7 bg-slate-100 rounded-lg font-bold"
+                      >
+                        -
+                      </button>
+                      <span className="font-black w-6 text-center">{mat.deliveredQty}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleSingleMaterialChange(mat.id, 1)}
+                        className="w-7 h-7 bg-slate-100 rounded-lg font-bold"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
 
           <div>
-            <label className="block text-slate-600 font-bold mb-1">
-              Note Consegna / Richieste Specifiche
-            </label>
+            <label className="block text-slate-600 font-bold mb-1">Note Consegna</label>
             <input
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Es. Lasciato 1 catalogo ma 2 campionari per nuovo venditore..."
+              placeholder="Es. Lasciato materiale extra..."
               className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
             />
           </div>
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
-            <div className="space-y-1">
+            <div>
               <label className="flex items-center space-x-2 cursor-pointer text-amber-700 font-semibold">
                 <input
                   type="checkbox"
-                  checked={alert || willTriggerAutoAlert}
-                  disabled={willTriggerAutoAlert}
+                  checked={alert || isQtyDifferentFromExpected}
+                  disabled={isQtyDifferentFromExpected}
                   onChange={(e) => setAlert(e.target.checked)}
-                  className="rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                  className="rounded border-amber-300 text-amber-600"
                 />
-                <span className="flex items-center">
-                  <AlertTriangle className="w-3.5 h-3.5 mr-1 flex-shrink-0" />
-                  Segnala Alert a Sede (Materiale Mancante / Extra)
-                </span>
+                <span>Segnala Alert a Sede</span>
               </label>
-              {willTriggerAutoAlert && (
-                <p className="text-[11px] text-indigo-700 font-semibold pl-5">
-                  Alert automatico attivo: premi "Conferma & Salva" per inviare la segnalazione alla Sede.
+              {isQtyDifferentFromExpected && (
+                <p className="text-[11px] text-indigo-700 font-semibold mt-0.5">
+                  Alert automatico attivo per variazione quantità (verrà notificato alla Sede).
                 </p>
               )}
             </div>
 
-            <div className="flex items-center space-x-2 self-end sm:self-auto">
-              {savedBadge && (
-                <span className="text-emerald-600 font-bold text-xs">✓ Salvato e inviato!</span>
-              )}
+            <div className="flex items-center space-x-2">
+              {savedBadge && <span className="text-emerald-600 font-bold text-xs">Salvato!</span>}
               <button
                 type="button"
                 onClick={handleSave}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition-colors shadow-sm"
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs"
               >
                 Conferma & Salva
               </button>
@@ -1456,9 +1266,6 @@ function ClientDeliveryRow({
   );
 }
 
-// ----------------------------------------------------------------------------
-// VISTA SEDE / COORDINATRICE
-// ----------------------------------------------------------------------------
 function OfficeView({
   agents,
   setAgents,
@@ -1480,14 +1287,13 @@ function OfficeView({
     () => deliveries.filter((d) => d.delivered && d.alert && !d.alertResolved).length,
     [deliveries]
   );
-
   const lowStockWarehouseCount = useMemo(
     () => warehouseItems.filter((w) => Number(w.quantity) < 5).length,
     [warehouseItems]
   );
 
   return (
-    <div className="space-y-6 max-w-full overflow-x-hidden">
+    <div className="space-y-6">
       <div className="bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-2 sm:flex sm:flex-wrap gap-1">
         {[
           { id: 'dashboard', label: 'Dashboard', icon: BarChart2 },
@@ -1511,10 +1317,8 @@ function OfficeView({
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center justify-center sm:justify-start space-x-1.5 px-2.5 sm:px-3.5 py-2 rounded-xl text-xs font-semibold transition-all min-w-0 ${
-                isActive
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              className={`flex items-center justify-center sm:justify-start space-x-1.5 px-2.5 sm:px-3.5 py-2 rounded-xl text-xs font-semibold ${
+                isActive ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'
               }`}
             >
               <Icon className="w-4 h-4 flex-shrink-0" />
@@ -1523,7 +1327,7 @@ function OfficeView({
                 <span
                   className={`${
                     tab.badgeColor || 'bg-amber-500'
-                  } text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold ml-1 flex-shrink-0`}
+                  } text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold ml-1`}
                 >
                   {tab.badge}
                 </span>
@@ -1536,7 +1340,6 @@ function OfficeView({
       {activeTab === 'dashboard' && (
         <DashboardTab
           agents={agents}
-          companies={companies}
           updates={updates}
           clients={clients}
           deliveries={deliveries}
@@ -1544,7 +1347,6 @@ function OfficeView({
           onNavigate={setActiveTab}
         />
       )}
-
       {activeTab === 'totals' && (
         <RequirementsTotalsTab
           companies={companies}
@@ -1553,7 +1355,6 @@ function OfficeView({
           deliveries={deliveries}
         />
       )}
-
       {activeTab === 'history' && (
         <DeliveryRegistryTab
           agents={agents}
@@ -1565,7 +1366,6 @@ function OfficeView({
           onRestoreWarehouseFromDelivery={onRestoreWarehouseFromDelivery}
         />
       )}
-
       {activeTab === 'warehouse' && (
         <WarehouseManagerTab
           companies={companies}
@@ -1574,7 +1374,6 @@ function OfficeView({
           setWarehouseItems={setWarehouseItems}
         />
       )}
-
       {activeTab === 'alerts' && (
         <AlertsTab
           agents={agents}
@@ -1586,29 +1385,24 @@ function OfficeView({
           setDeliveries={setDeliveries}
         />
       )}
-
       {activeTab === 'clients' && (
         <ClientsManagerTab
           agents={agents}
           companies={companies}
           clients={clients}
           setClients={setClients}
-          deliveries={deliveries}
           setDeliveries={setDeliveries}
         />
       )}
-
       {activeTab === 'companies' && (
         <CompaniesUpdatesTab
           companies={companies}
           setCompanies={setCompanies}
           updates={updates}
           setUpdates={setUpdates}
-          deliveries={deliveries}
           setDeliveries={setDeliveries}
         />
       )}
-
       {activeTab === 'agents' && (
         <AgentsManagerTab
           agents={agents}
@@ -1621,18 +1415,7 @@ function OfficeView({
   );
 }
 
-// ----------------------------------------------------------------------------
-// 1. DASHBOARD RIEPILOGATIVA
-// ----------------------------------------------------------------------------
-function DashboardTab({
-  agents,
-  companies,
-  updates,
-  clients,
-  deliveries,
-  warehouseItems = [],
-  onNavigate
-}) {
+function DashboardTab({ agents, updates, clients, deliveries, warehouseItems = [], onNavigate }) {
   const deliveredRecords = deliveries.filter((d) => d.delivered);
   const activeAlerts = deliveredRecords.filter((d) => d.alert && !d.alertResolved);
   const lowStockCount = warehouseItems.filter((w) => Number(w.quantity) < 5).length;
@@ -1644,100 +1427,59 @@ function DashboardTab({
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
           <div className="text-xs font-bold text-slate-400 uppercase">Consegne Registrate</div>
           <div className="text-2xl font-black text-slate-900 mt-1">{deliveredRecords.length}</div>
-          <div className="text-xs text-slate-400 mt-1">Visite completate</div>
         </div>
-
         <div
           onClick={() => onNavigate('alerts')}
-          className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm cursor-pointer hover:border-amber-300 transition-colors"
+          className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm cursor-pointer hover:border-amber-300"
         >
           <div className="text-xs font-bold text-amber-500 uppercase">Alert Materiale Aperti</div>
           <div className="text-2xl font-black text-amber-600 mt-1">{activeAlerts.length}</div>
-          <div className="text-xs text-slate-400 mt-1">Clicca per gestire</div>
         </div>
-
         <div
           onClick={() => onNavigate('warehouse')}
-          className={`bg-white p-4 rounded-2xl border shadow-sm cursor-pointer transition-colors ${
-            lowStockCount > 0
-              ? 'border-rose-300 bg-rose-50/30 hover:border-rose-400'
-              : 'border-slate-200 hover:border-indigo-300'
+          className={`bg-white p-4 rounded-2xl border shadow-sm cursor-pointer ${
+            lowStockCount > 0 ? 'border-rose-300 bg-rose-50/30' : 'border-slate-200'
           }`}
         >
-          <div
-            className={`text-xs font-bold uppercase ${
-              lowStockCount > 0 ? 'text-rose-600' : 'text-indigo-500'
-            }`}
-          >
-            Scorte Magazzino sotto 5 pz
-          </div>
-          <div
-            className={`text-2xl font-black mt-1 ${
-              lowStockCount > 0 ? 'text-rose-600' : 'text-slate-800'
-            }`}
-          >
-            {lowStockCount}
-          </div>
-          <div className="text-xs text-slate-400 mt-1">
-            Su {warehouseItems.length} articoli a magazzino
-          </div>
+          <div className="text-xs font-bold text-rose-600 uppercase">Scorte sotto 5 pz</div>
+          <div className="text-2xl font-black text-rose-600 mt-1">{lowStockCount}</div>
         </div>
-
         <div
           onClick={() => onNavigate('totals')}
-          className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm cursor-pointer hover:border-emerald-300 transition-colors"
+          className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm cursor-pointer"
         >
           <div className="text-xs font-bold text-emerald-600 uppercase">Cataloghi Pubblicati</div>
           <div className="text-2xl font-black text-emerald-600 mt-1">{updates.length}</div>
-          <div className="text-xs text-slate-400 mt-1">Vedi fabbisogno totale →</div>
         </div>
       </div>
 
       <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-        <h3 className="font-bold text-slate-800 text-sm flex items-center">
-          <BarChart2 className="w-4 h-4 mr-2 text-indigo-600" />
-          Avanzamento Consegne per Agente
-        </h3>
-
+        <h3 className="font-bold text-slate-800 text-sm">Avanzamento Consegne per Agente</h3>
         {fieldAgents.length === 0 ? (
-          <p className="text-xs text-slate-400">
-            Nessun agente registrato. Vai nella scheda "Anagrafica Agenti" per crearli.
-          </p>
+          <p className="text-xs text-slate-400">Nessun agente registrato.</p>
         ) : (
           <div className="space-y-4">
             {fieldAgents.map((ag) => {
-              const agClients = clients.filter(
-                (c) => c.agentId === ag.id || c.agentId === ag.name
-              );
-              let totalExpectedTasks = 0;
+              const agClients = clients.filter((c) => c.agentId === ag.id || c.agentId === ag.name);
+              let totalExpected = 0;
               agClients.forEach((cl) => {
                 (cl.companyIds || []).forEach((compId) => {
-                  const compUpds = updates.filter((u) => u.companyId === compId);
-                  totalExpectedTasks += compUpds.length;
+                  totalExpected += updates.filter((u) => u.companyId === compId).length;
                 });
               });
-
               const agCompleted = deliveredRecords.filter((d) => d.agentId === ag.id).length;
               const pct =
-                totalExpectedTasks > 0
-                  ? Math.min(100, Math.round((agCompleted / totalExpectedTasks) * 100))
-                  : 0;
-
+                totalExpected > 0 ? Math.min(100, Math.round((agCompleted / totalExpected) * 100)) : 0;
               return (
                 <div key={ag.id} className="space-y-1.5">
                   <div className="flex justify-between text-xs font-semibold">
-                    <span className="text-slate-800">
-                      {ag.name} <span className="text-slate-400 font-normal">({ag.email})</span>
-                    </span>
+                    <span>{ag.name}</span>
                     <span className="text-indigo-600">
-                      {agCompleted} / {totalExpectedTasks} consegne ({pct}%)
+                      {agCompleted} / {totalExpected} ({pct}%)
                     </span>
                   </div>
                   <div className="w-full bg-slate-100 rounded-full h-2.5">
-                    <div
-                      className="bg-indigo-600 h-2.5 rounded-full transition-all"
-                      style={{ width: `${pct}%` }}
-                    />
+                    <div className="bg-indigo-600 h-2.5 rounded-full" style={{ width: `${pct}%` }} />
                   </div>
                 </div>
               );
@@ -1749,400 +1491,153 @@ function DashboardTab({
   );
 }
 
-// ----------------------------------------------------------------------------
-// 2. FABBISOGNO & TOTALI
-// ----------------------------------------------------------------------------
 function RequirementsTotalsTab({ companies, updates, clients, deliveries }) {
   const [selectedCompanyFilter, setSelectedCompanyFilter] = useState('');
   const [selectedYearFolder, setSelectedYearFolder] = useState('all');
 
   const availableYears = useMemo(() => {
-    const yearsSet = new Set();
-    updates.forEach((u) => {
-      yearsSet.add(String(u.year || new Date().getFullYear()));
-    });
-    return Array.from(yearsSet).sort((a, b) => Number(b) - Number(a));
+    const s = new Set();
+    updates.forEach((u) => s.add(String(u.year || new Date().getFullYear())));
+    return Array.from(s).sort((a, b) => Number(b) - Number(a));
   }, [updates]);
 
-  const visibleCompanies = useMemo(() => {
-    if (!selectedCompanyFilter) return companies;
-    return companies.filter((c) => c.id === selectedCompanyFilter);
-  }, [companies, selectedCompanyFilter]);
+  const visibleCompanies = useMemo(
+    () => (selectedCompanyFilter ? companies.filter((c) => c.id === selectedCompanyFilter) : companies),
+    [companies, selectedCompanyFilter]
+  );
 
-  const handleExportRequirementsExcel = () => {
-    const headers = [
-      'Anno',
-      'Azienda Mandante',
-      'Codice Azienda',
-      'Titolo Aggiornamento',
-      'Clienti Coinvolti',
-      'Kit Totali da Richiedere',
-      'Kit Consegnati',
-      'Kit Mancanti',
-      'Distinta Materiali (Necessari / Consegnati / Mancanti)'
-    ];
-
+  const handleExport = () => {
+    const headers = ['Anno', 'Azienda', 'Catalogo', 'Clienti', 'Necessari', 'Consegnati', 'Mancanti'];
     const rows = [];
-    visibleCompanies.forEach((company) => {
-      const companyUpdates = updates.filter((u) => {
-        const updYear = String(u.year || new Date().getFullYear());
-        const matchYear = selectedYearFolder === 'all' || updYear === selectedYearFolder;
-        return u.companyId === company.id && matchYear;
-      });
-      const companyClients = clients.filter(
-        (c) => Array.isArray(c.companyIds) && c.companyIds.includes(company.id)
+    visibleCompanies.forEach((comp) => {
+      const compClients = clients.filter((c) => c.companyIds?.includes(comp.id));
+      const expectedKits = compClients.reduce(
+        (sum, cl) => sum + Math.max(1, Number(cl.companyConfigs?.[comp.id]?.quantity) || 1),
+        0
       );
-      const totalCompanyExpectedKits = companyClients.reduce((sum, cl) => {
-        const q = cl.companyConfigs?.[company.id]?.quantity;
-        return sum + Math.max(1, Number(q) || 1);
-      }, 0);
-
-      if (companyUpdates.length === 0) {
-        if (selectedYearFolder === 'all') {
+      updates
+        .filter(
+          (u) =>
+            u.companyId === comp.id &&
+            (selectedYearFolder === 'all' || String(u.year || new Date().getFullYear()) === selectedYearFolder)
+        )
+        .forEach((upd) => {
+          const delivKits = deliveries
+            .filter((d) => d.updateId === upd.id && d.delivered)
+            .reduce((sum, d) => sum + (Number(d.quantity) || 1), 0);
           rows.push([
-            '-',
-            company.name,
-            company.code || '',
-            'Nessun aggiornamento pubblicato',
-            companyClients.length,
-            totalCompanyExpectedKits,
-            0,
-            totalCompanyExpectedKits,
-            '-'
-          ]);
-        }
-      } else {
-        companyUpdates.forEach((upd) => {
-          const updYear = String(upd.year || new Date().getFullYear());
-          const updDeliveries = deliveries.filter((d) => d.updateId === upd.id && d.delivered);
-          const deliveredKits = updDeliveries.reduce((sum, d) => sum + (Number(d.quantity) || 1), 0);
-          const remainingKits = Math.max(0, totalCompanyExpectedKits - deliveredKits);
-
-          const matSummary = (upd.contentItems || [])
-            .map((item) => {
-              const unitQty = Number(item.qty) || 1;
-              const totalNeeded = totalCompanyExpectedKits * unitQty;
-              const totalDelivered = updDeliveries.reduce((sum, d) => {
-                const found = d.deliveredMaterials?.find((m) => m.id === item.id || m.name === item.name);
-                return sum + (found ? Number(found.deliveredQty) || 0 : (Number(d.quantity) || 1) * unitQty);
-              }, 0);
-              const rem = Math.max(0, totalNeeded - totalDelivered);
-              return `${item.name}: ${totalNeeded} ord. / ${totalDelivered} cons. / ${rem} manc.`;
-            })
-            .join(' | ');
-
-          rows.push([
-            updYear,
-            company.name,
-            company.code || '',
+            upd.year || new Date().getFullYear(),
+            comp.name,
             upd.title,
-            companyClients.length,
-            totalCompanyExpectedKits,
-            deliveredKits,
-            remainingKits,
-            matSummary || `${totalCompanyExpectedKits} unità standard`
+            compClients.length,
+            expectedKits,
+            delivKits,
+            Math.max(0, expectedKits - delivKits)
           ]);
         });
-      }
     });
-
-    const folderTag = selectedYearFolder === 'all' ? 'Tutti_Anni' : `Anno_${selectedYearFolder}`;
-    exportToExcelCSV(`Fabbisogno_Aggiornamenti_${folderTag}`, headers, rows);
+    exportToExcelCSV('Fabbisogno_Aggiornamenti', headers, rows);
   };
 
   return (
     <div className="space-y-6">
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h3 className="font-bold text-slate-900 text-base flex items-center">
-              <Box className="w-5 h-5 mr-2 text-indigo-600" />
-              Fabbisogno Totale Aggiornamenti & Materiali per Azienda
-            </h3>
-            <p className="text-xs text-slate-500">
-              Calcolo automatico dei kit e dei singoli materiali da ordinare in base alle Qtà Spettanti dei clienti
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={selectedCompanyFilter}
-              onChange={(e) => setSelectedCompanyFilter(e.target.value)}
-              className="text-xs p-2 border border-slate-200 rounded-xl bg-slate-50 font-semibold"
-            >
-              <option value="">Tutte le Aziende Mandanti</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="button"
-              onClick={handleExportRequirementsExcel}
-              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 shadow-sm transition-colors"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Esporta Excel</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
-          <span className="text-[11px] font-bold text-slate-400 uppercase mr-1">
-            Cartelle Annuali:
-          </span>
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+        <h3 className="font-bold text-slate-900 text-base">Fabbisogno Totale per Azienda</h3>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={selectedYearFolder}
+            onChange={(e) => setSelectedYearFolder(e.target.value)}
+            className="text-xs p-2 border border-slate-200 rounded-xl bg-slate-50 font-semibold"
+          >
+            <option value="all">Tutti gli Anni</option>
+            {availableYears.map((yr) => (
+              <option key={yr} value={yr}>
+                Anno {yr}
+              </option>
+            ))}
+          </select>
+          <select
+            value={selectedCompanyFilter}
+            onChange={(e) => setSelectedCompanyFilter(e.target.value)}
+            className="text-xs p-2 border border-slate-200 rounded-xl bg-slate-50 font-semibold"
+          >
+            <option value="">Tutte le Aziende</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
           <button
             type="button"
-            onClick={() => setSelectedYearFolder('all')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 border transition-all ${
-              selectedYearFolder === 'all'
-                ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs'
-                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-            }`}
+            onClick={handleExport}
+            className="px-3.5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5"
           >
-            <FolderOpen className="w-3.5 h-3.5" />
-            <span>Tutti gli Anni ({updates.length})</span>
+            <Download className="w-3.5 h-3.5" />
+            <span>Esporta Excel</span>
           </button>
-
-          {availableYears.map((yr) => {
-            const countInYear = updates.filter(
-              (u) => String(u.year || new Date().getFullYear()) === yr
-            ).length;
-            const isSelected = selectedYearFolder === yr;
-            return (
-              <button
-                key={yr}
-                type="button"
-                onClick={() => setSelectedYearFolder(yr)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 border transition-all ${
-                  isSelected
-                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs'
-                    : 'bg-amber-50/60 border-amber-200 text-amber-900 hover:bg-amber-100/70'
-                }`}
-              >
-                {isSelected ? (
-                  <FolderOpen className="w-3.5 h-3.5" />
-                ) : (
-                  <Folder className="w-3.5 h-3.5 text-amber-600" />
-                )}
-                <span>Anno {yr}</span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.2 rounded-full ${
-                    isSelected ? 'bg-indigo-500 text-white' : 'bg-amber-200/80 text-amber-900'
-                  }`}
-                >
-                  {countInYear}
-                </span>
-              </button>
-            );
-          })}
         </div>
       </div>
 
-      {visibleCompanies.length === 0 ? (
-        <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center text-sm text-slate-400">
-          Nessuna azienda mandante configurata. Aggiungile in "Aziende & Cataloghi".
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {visibleCompanies.map((company) => {
-            const companyUpdates = updates.filter((u) => {
-              const updYear = String(u.year || new Date().getFullYear());
-              const matchYear = selectedYearFolder === 'all' || updYear === selectedYearFolder;
-              return u.companyId === company.id && matchYear;
-            });
-            const companyClients = clients.filter(
-              (c) => Array.isArray(c.companyIds) && c.companyIds.includes(company.id)
-            );
-            const totalCompanyExpectedKits = companyClients.reduce((sum, cl) => {
-              const q = cl.companyConfigs?.[company.id]?.quantity;
-              return sum + Math.max(1, Number(q) || 1);
-            }, 0);
-
-            return (
-              <div
-                key={company.id}
-                className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
-              >
-                <div className="bg-slate-900 text-white p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <div className="flex items-center space-x-2">
-                      <span className="font-bold text-base">{company.name}</span>
-                      {company.code && (
-                        <span className="text-[10px] bg-slate-700 px-2 py-0.5 rounded font-mono">
-                          {company.code}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-400">
-                      {companyClients.length} clienti trattano questa azienda
-                    </p>
-                  </div>
-
-                  <div className="bg-indigo-600/30 border border-indigo-400/30 px-3.5 py-2 rounded-xl text-right">
-                    <div className="text-[10px] uppercase font-bold text-indigo-200">
-                      Fabbisogno Base Azienda
-                    </div>
-                    <div className="text-sm font-black text-white">
-                      {totalCompanyExpectedKits} Aggiornamenti Totali
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-4 space-y-4">
-                  {companyUpdates.length === 0 ? (
-                    <p className="text-xs text-slate-400 italic">
-                      Nessun aggiornamento presente per {company.name} nella cartella selezionata. Serviranno comunque{' '}
-                      <strong>{totalCompanyExpectedKits}</strong> copie al prossimo lancio.
-                    </p>
-                  ) : (
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      {companyUpdates.map((upd) => {
-                        const updYear = upd.year || new Date().getFullYear();
-                        const updDeliveries = deliveries.filter(
-                          (d) => d.updateId === upd.id && d.delivered
-                        );
-                        const deliveredClientsCount = updDeliveries.length;
-                        const deliveredKits = updDeliveries.reduce(
-                          (sum, d) => sum + (Number(d.quantity) || 1),
-                          0
-                        );
-                        const remainingKits = Math.max(0, totalCompanyExpectedKits - deliveredKits);
-
-                        return (
-                          <div
-                            key={upd.id}
-                            className="border border-slate-200 rounded-xl p-4 bg-slate-50/70 space-y-3"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <div className="flex items-center space-x-1.5">
-                                  <span className="text-[10px] font-bold uppercase text-indigo-600">
-                                    Aggiornamento
-                                  </span>
-                                  <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 border border-amber-200">
-                                    Anno {updYear}
-                                  </span>
-                                </div>
-                                <h4 className="font-bold text-slate-900 text-sm mt-0.5">{upd.title}</h4>
-                              </div>
-                              <div className="text-right">
-                                <span className="inline-block px-2.5 py-1 rounded-lg bg-indigo-600 text-white font-black text-xs shadow-2xs">
-                                  Totale da Richiedere: {totalCompanyExpectedKits}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-3 gap-2 text-center bg-white p-2.5 rounded-xl border border-slate-200">
-                              <div>
-                                <div className="text-[10px] text-slate-400 font-bold uppercase">
-                                  Necessari
-                                </div>
-                                <div className="text-sm font-black text-slate-800">
-                                  {totalCompanyExpectedKits}
-                                </div>
-                              </div>
-                              <div className="border-x border-slate-100">
-                                <div className="text-[10px] text-emerald-600 font-bold uppercase">
-                                  Consegnati
-                                </div>
-                                <div className="text-sm font-black text-emerald-600">
-                                  {deliveredKits}
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-[10px] text-amber-600 font-bold uppercase">
-                                  Mancanti
-                                </div>
-                                <div className="text-sm font-black text-amber-600">
-                                  {remainingKits}
-                                </div>
-                              </div>
-                            </div>
-
-                            {Array.isArray(upd.contentItems) && upd.contentItems.length > 0 && (
-                              <div className="space-y-1.5 pt-1">
-                                <div className="text-[11px] font-bold text-slate-600 uppercase">
-                                  Dettaglio Singoli Materiali da Ordinare:
-                                </div>
-                                <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
-                                  {upd.contentItems.map((item) => {
-                                    const unitQty = Number(item.qty) || 1;
-                                    const totalItemNeeded = totalCompanyExpectedKits * unitQty;
-                                    const totalItemDelivered = updDeliveries.reduce((sum, d) => {
-                                      const found = d.deliveredMaterials?.find(
-                                        (m) => m.id === item.id || m.name === item.name
-                                      );
-                                      if (found) return sum + (Number(found.deliveredQty) || 0);
-                                      return sum + (Number(d.quantity) || 1) * unitQty;
-                                    }, 0);
-                                    const totalItemRemaining = Math.max(
-                                      0,
-                                      totalItemNeeded - totalItemDelivered
-                                    );
-
-                                    return (
-                                      <div
-                                        key={item.id}
-                                        className="px-3 py-2 flex items-center justify-between text-xs"
-                                      >
-                                        <div>
-                                          <span className="font-bold text-slate-800">
-                                            {item.name}
-                                          </span>
-                                          <span className="text-[10px] text-slate-400 ml-1.5">
-                                            ({unitQty} per aggiornamento)
-                                          </span>
-                                        </div>
-                                        <div className="flex items-center space-x-2 text-right">
-                                          <span className="font-black text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">
-                                            {totalItemNeeded} pz totali
-                                          </span>
-                                          <span className="text-[10px] text-slate-500">
-                                            ({totalItemDelivered} cons. / {totalItemRemaining} manc.)
-                                          </span>
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-
-                            <div className="text-[11px] text-slate-500 flex justify-between pt-1">
-                              <span>
-                                Copertura clienti: <strong>{deliveredClientsCount}</strong> su{' '}
-                                <strong>{companyClients.length}</strong>
-                              </span>
-                              <span>
-                                {companyClients.length > 0
-                                  ? Math.round(
-                                      (deliveredClientsCount / companyClients.length) * 100
-                                    )
-                                  : 0}
-                                % completato
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+      {visibleCompanies.map((company) => {
+        const companyClients = clients.filter((c) => c.companyIds?.includes(company.id));
+        const totalExpected = companyClients.reduce(
+          (sum, cl) => sum + Math.max(1, Number(cl.companyConfigs?.[company.id]?.quantity) || 1),
+          0
+        );
+        const companyUpdates = updates.filter(
+          (u) =>
+            u.companyId === company.id &&
+            (selectedYearFolder === 'all' || String(u.year || new Date().getFullYear()) === selectedYearFolder)
+        );
+        return (
+          <div key={company.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
+              <div>
+                <div className="font-bold text-base">{company.name}</div>
+                <div className="text-xs text-slate-400">{companyClients.length} clienti</div>
               </div>
-            );
-          })}
-        </div>
-      )}
+              <div className="text-sm font-black bg-indigo-600/30 px-3 py-1.5 rounded-xl">
+                {totalExpected} Kit Totali
+              </div>
+            </div>
+            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+              {companyUpdates.map((upd) => {
+                const delivKits = deliveries
+                  .filter((d) => d.updateId === upd.id && d.delivered)
+                  .reduce((sum, d) => sum + (Number(d.quantity) || 1), 0);
+                return (
+                  <div key={upd.id} className="border border-slate-200 rounded-xl p-4 bg-slate-50 space-y-2">
+                    <div className="font-bold text-sm">
+                      {upd.title} ({upd.year || new Date().getFullYear()})
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center bg-white p-2 rounded-lg border border-slate-200 text-xs">
+                      <div>
+                        <div className="text-slate-400 font-bold">Necessari</div>
+                        <div className="font-black">{totalExpected}</div>
+                      </div>
+                      <div>
+                        <div className="text-emerald-600 font-bold">Consegnati</div>
+                        <div className="font-black text-emerald-600">{delivKits}</div>
+                      </div>
+                      <div>
+                        <div className="text-amber-600 font-bold">Mancanti</div>
+                        <div className="font-black text-amber-600">
+                          {Math.max(0, totalExpected - delivKits)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-// ----------------------------------------------------------------------------
-// 3. REGISTRO CONSEGNE & CLIENTI MANCANTI
-// ----------------------------------------------------------------------------
 function DeliveryRegistryTab({
   agents,
   companies,
@@ -2154,115 +1649,48 @@ function DeliveryRegistryTab({
 }) {
   const [selectedYearFolder, setSelectedYearFolder] = useState('all');
   const [searchInput, setSearchInput] = useState('');
-  const [appliedSearch, setAppliedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [companyFilter, setCompanyFilter] = useState('');
-  const [updateFilter, setUpdateFilter] = useState('');
   const [agentFilter, setAgentFilter] = useState('');
-  const [provinceFilter, setProvinceFilter] = useState('');
-  const [onlyAlertsFilter, setOnlyAlertsFilter] = useState(false);
 
-  const [editingDeliveryId, setEditingDeliveryId] = useState(null);
-  const [editDateValue, setEditDateValue] = useState('');
-
-  const yearFolders = useMemo(() => {
-    const map = {};
-    updates.forEach((u) => {
-      const yr = String(u.year || new Date().getFullYear());
-      if (!map[yr]) {
-        map[yr] = { year: yr, updatesCount: 0, deliveredCount: 0, totalExpectedRows: 0 };
-      }
-      map[yr].updatesCount += 1;
-      const eligibleClients = clients.filter(
-        (cl) => Array.isArray(cl.companyIds) && cl.companyIds.includes(u.companyId)
-      );
-      map[yr].totalExpectedRows += eligibleClients.length;
-      const done = eligibleClients.filter((cl) =>
-        deliveries.some((d) => d.clientId === cl.id && d.updateId === u.id && d.delivered)
-      ).length;
-      map[yr].deliveredCount += done;
-    });
-    return Object.values(map).sort((a, b) => Number(b.year) - Number(a.year));
-  }, [updates, clients, deliveries]);
-
-  const handleSearchChange = (val) => {
-    setSearchInput(val);
-    setAppliedSearch(val);
-  };
-
-  const handleSearchSubmit = (e) => {
-    e.preventDefault();
-    setAppliedSearch(searchInput);
-  };
-
-  const handleResetFilters = () => {
-    setSelectedYearFolder('all');
-    setSearchInput('');
-    setAppliedSearch('');
-    setStatusFilter('all');
-    setCompanyFilter('');
-    setUpdateFilter('');
-    setAgentFilter('');
-    setProvinceFilter('');
-    setOnlyAlertsFilter(false);
-  };
-
-  const availableProvinces = useMemo(() => {
-    const set = new Set();
-    clients.forEach((c) => {
-      if (c.province && c.province.trim()) {
-        set.add(c.province.trim().toUpperCase());
-      }
-    });
-    return Array.from(set).sort();
-  }, [clients]);
-
-  const availableUpdates = useMemo(() => {
-    return updates.filter((u) => {
-      const updYear = String(u.year || new Date().getFullYear());
-      const matchYear = selectedYearFolder === 'all' || updYear === selectedYearFolder;
-      const matchCompany = !companyFilter || u.companyId === companyFilter;
-      return matchYear && matchCompany;
-    });
-  }, [updates, companyFilter, selectedYearFolder]);
+  const availableYears = useMemo(() => {
+    const s = new Set();
+    updates.forEach((u) => s.add(String(u.year || new Date().getFullYear())));
+    return Array.from(s).sort((a, b) => Number(b) - Number(a));
+  }, [updates]);
 
   const unifiedRows = useMemo(() => {
     const rows = [];
-
     updates.forEach((upd) => {
       const updYear = String(upd.year || new Date().getFullYear());
       const comp = companies.find((c) => c.id === upd.companyId);
-      const eligibleClients = clients.filter(
-        (cl) => Array.isArray(cl.companyIds) && cl.companyIds.includes(upd.companyId)
-      );
-
-      eligibleClients.forEach((cl) => {
-        const ag = agents.find((a) => a.id === cl.agentId || a.name === cl.agentId);
-        const deliv = deliveries.find(
-          (d) => d.clientId === cl.id && d.updateId === upd.id && d.delivered
-        );
-        const expectedQty = cl.companyConfigs?.[upd.companyId]?.quantity
-          ? Math.max(1, Number(cl.companyConfigs[upd.companyId].quantity))
-          : 1;
-
-        rows.push({
-          rowKey: `${upd.id}_${cl.id}`,
-          year: updYear,
-          status: deliv ? 'delivered' : 'missing',
-          delivery: deliv || null,
-          client: cl,
-          agent: ag || null,
-          company: comp || null,
-          update: upd,
-          expectedQty,
-          deliveredQty: deliv ? Number(deliv.quantity) || 1 : 0,
-          deliveredMaterials: deliv?.deliveredMaterials || [],
-          deliveredAt: deliv?.deliveredAt || null,
-          notes: deliv?.notes || '',
-          alert: deliv ? !!deliv.alert : false,
-          alertResolved: deliv ? !!deliv.alertResolved : false
+      clients
+        .filter((cl) => cl.companyIds?.includes(upd.companyId))
+        .forEach((cl) => {
+          const ag = agents.find((a) => a.id === cl.agentId || a.name === cl.agentId);
+          const deliv = deliveries.find(
+            (d) => d.clientId === cl.id && d.updateId === upd.id && d.delivered
+          );
+          const expectedQty = cl.companyConfigs?.[upd.companyId]?.quantity
+            ? Math.max(1, Number(cl.companyConfigs[upd.companyId].quantity))
+            : 1;
+          rows.push({
+            rowKey: `${upd.id}_${cl.id}`,
+            year: updYear,
+            status: deliv ? 'delivered' : 'missing',
+            delivery: deliv || null,
+            client: cl,
+            agent: ag || null,
+            company: comp || null,
+            update: upd,
+            expectedQty,
+            deliveredQty: deliv ? Number(deliv.quantity) || 1 : 0,
+            deliveredMaterials: deliv?.deliveredMaterials || [],
+            deliveredAt: deliv?.deliveredAt || null,
+            notes: deliv?.notes || '',
+            alert: deliv ? !!deliv.alert : false
+          });
         });
-      });
     });
 
     return rows.filter((r) => {
@@ -2270,296 +1698,76 @@ function DeliveryRegistryTab({
       if (statusFilter === 'delivered' && r.status !== 'delivered') return false;
       if (statusFilter === 'missing' && r.status !== 'missing') return false;
       if (companyFilter && r.company?.id !== companyFilter) return false;
-      if (updateFilter && r.update?.id !== updateFilter) return false;
       if (agentFilter && r.agent?.id !== agentFilter) return false;
-      if (
-        provinceFilter &&
-        (r.client?.province || '').trim().toUpperCase() !== provinceFilter
-      ) {
-        return false;
+      if (searchInput.trim()) {
+        const q = searchInput.trim().toLowerCase();
+        const hay = `${r.client?.name} ${r.client?.province} ${r.agent?.name} ${r.company?.name} ${r.update?.title} ${r.notes}`.toLowerCase();
+        if (!hay.includes(q)) return false;
       }
-      if (onlyAlertsFilter && !r.alert && !r.notes) return false;
-
-      if (appliedSearch.trim()) {
-        const q = appliedSearch.trim().toLowerCase();
-        const matchClient = (r.client?.name || '').toLowerCase().includes(q);
-        const matchProv = (r.client?.province || '').toLowerCase().includes(q);
-        const matchAgent = (r.agent?.name || '').toLowerCase().includes(q);
-        const matchCompany = (r.company?.name || '').toLowerCase().includes(q);
-        const matchUpdate = (r.update?.title || '').toLowerCase().includes(q);
-        const matchYear = (r.year || '').includes(q);
-        const matchNotes = (r.notes || '').toLowerCase().includes(q);
-        const matchMaterials = r.deliveredMaterials.some((m) =>
-          (m.name || '').toLowerCase().includes(q)
-        );
-        if (
-          !matchClient &&
-          !matchProv &&
-          !matchAgent &&
-          !matchCompany &&
-          !matchUpdate &&
-          !matchYear &&
-          !matchNotes &&
-          !matchMaterials
-        ) {
-          return false;
-        }
-      }
-
       return true;
     });
-  }, [
-    updates,
-    companies,
-    clients,
-    agents,
-    deliveries,
-    selectedYearFolder,
-    statusFilter,
-    companyFilter,
-    updateFilter,
-    agentFilter,
-    provinceFilter,
-    onlyAlertsFilter,
-    appliedSearch
-  ]);
-
-  const totalFilteredCount = unifiedRows.length;
-  const deliveredFilteredCount = unifiedRows.filter((r) => r.status === 'delivered').length;
-  const missingFilteredCount = unifiedRows.filter((r) => r.status === 'missing').length;
+  }, [updates, companies, clients, agents, deliveries, selectedYearFolder, statusFilter, companyFilter, agentFilter, searchInput]);
 
   const handleDeleteDelivery = (deliveryId) => {
     const target = deliveries.find((d) => d.id === deliveryId);
-    if (target && onRestoreWarehouseFromDelivery) {
-      onRestoreWarehouseFromDelivery(target);
-    }
+    if (target && onRestoreWarehouseFromDelivery) onRestoreWarehouseFromDelivery(target);
     setDeliveries((prev) => prev.filter((d) => d.id !== deliveryId));
   };
 
-  const handleStartEditDate = (delivery) => {
-    setEditingDeliveryId(delivery.id);
-    setEditDateValue(toDateTimeLocal(delivery.deliveredAt));
-  };
-
-  const handleSaveEditedDate = (deliveryId) => {
-    if (editDateValue) {
-      const iso = new Date(editDateValue).toISOString();
-      setDeliveries((prev) =>
-        prev.map((d) => (d.id === deliveryId ? { ...d, deliveredAt: iso } : d))
-      );
-    }
-    setEditingDeliveryId(null);
-  };
-
-  const handleExportRegistryExcel = () => {
-    const headers = [
-      'Anno',
-      'Stato',
-      'Cliente',
-      'Provincia',
-      'Azienda Mandante',
-      'Aggiornamento / Catalogo',
-      'Agente',
-      'Data e Ora Consegna',
-      'Kit Spettanti',
-      'Kit Consegnati',
-      'Dettaglio Materiali Consegnati',
-      'Alert Sede',
-      'Note'
-    ];
-
-    const rows = unifiedRows.map((r) => {
-      const matsString =
-        r.status === 'delivered' && r.deliveredMaterials.length > 0
-          ? r.deliveredMaterials.map((m) => `${m.deliveredQty}x ${m.name}`).join(', ')
-          : r.status === 'missing'
-          ? `Da consegnare (${r.expectedQty} kit)`
-          : `${r.deliveredQty} kit`;
-
-      return [
-        r.year,
-        r.status === 'delivered' ? 'Consegnato' : 'Da Consegnare (Mancante)',
-        r.client?.name || 'N.D.',
-        r.client?.province || '',
-        r.company?.name || '',
-        r.update?.title || '',
-        r.agent?.name || 'Non assegnato',
-        r.status === 'delivered' ? formatDisplayDate(r.deliveredAt) : 'In attesa',
-        r.expectedQty,
-        r.status === 'delivered' ? r.deliveredQty : 0,
-        matsString,
-        r.alert ? (r.alertResolved ? 'Alert Evaso' : 'ALERT APERTO') : 'No',
-        r.notes || ''
-      ];
-    });
-
-    const folderTag = selectedYearFolder === 'all' ? 'Tutti_Anni' : `Anno_${selectedYearFolder}`;
-    exportToExcelCSV(`Registro_Consegne_${folderTag}`, headers, rows);
+  const handleExport = () => {
+    const headers = ['Anno', 'Stato', 'Cliente', 'Prov', 'Azienda', 'Catalogo', 'Agente', 'Data', 'Spettanti', 'Consegnati', 'Note'];
+    const rows = unifiedRows.map((r) => [
+      r.year,
+      r.status === 'delivered' ? 'Consegnato' : 'Mancante',
+      r.client?.name || '',
+      r.client?.province || '',
+      r.company?.name || '',
+      r.update?.title || '',
+      r.agent?.name || '',
+      r.status === 'delivered' ? formatDisplayDate(r.deliveredAt) : 'In attesa',
+      r.expectedQty,
+      r.status === 'delivered' ? r.deliveredQty : 0,
+      r.notes
+    ]);
+    exportToExcelCSV('Registro_Consegne', headers, rows);
   };
 
   return (
     <div className="space-y-4">
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-2.5">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center">
-            <FolderOpen className="w-4 h-4 mr-1.5 text-amber-500" />
-            Cartelle Aggiornamenti per Anno
-          </span>
-          <span className="text-[11px] text-slate-400">
-            Seleziona una cartella annuale per filtrare consegne, mancanti ed esportazione Excel
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2.5">
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedYearFolder('all');
-              setUpdateFilter('');
-            }}
-            className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
-              selectedYearFolder === 'all'
-                ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
-                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <FolderOpen
-                className={`w-4 h-4 ${
-                  selectedYearFolder === 'all' ? 'text-white' : 'text-indigo-600'
-                }`}
-              />
-              <span
-                className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                  selectedYearFolder === 'all'
-                    ? 'bg-indigo-500 text-white'
-                    : 'bg-slate-200 text-slate-600'
-                }`}
-              >
-                {updates.length} cat.
-              </span>
-            </div>
-            <div className="mt-2">
-              <div className="font-bold text-xs">Tutti gli Anni</div>
-              <div
-                className={`text-[10px] ${
-                  selectedYearFolder === 'all' ? 'text-indigo-200' : 'text-slate-400'
-                }`}
-              >
-                Archivio completo
-              </div>
-            </div>
-          </button>
-
-          {yearFolders.map((folder) => {
-            const isSelected = selectedYearFolder === folder.year;
-            const pct =
-              folder.totalExpectedRows > 0
-                ? Math.round((folder.deliveredCount / folder.totalExpectedRows) * 100)
-                : 0;
-            return (
-              <button
-                key={folder.year}
-                type="button"
-                onClick={() => {
-                  setSelectedYearFolder(folder.year);
-                  setUpdateFilter('');
-                }}
-                className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                  isSelected
-                    ? 'bg-slate-900 border-slate-900 text-white shadow-md'
-                    : 'bg-amber-50/50 border-amber-200/80 text-slate-800 hover:bg-amber-50'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  {isSelected ? (
-                    <FolderOpen className="w-4 h-4 text-amber-400" />
-                  ) : (
-                    <Folder className="w-4 h-4 text-amber-500" />
-                  )}
-                  <span
-                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                      isSelected
-                        ? 'bg-slate-800 text-amber-300'
-                        : 'bg-amber-100 text-amber-800'
-                    }`}
-                  >
-                    {folder.updatesCount} agg.
-                  </span>
-                </div>
-                <div className="mt-2">
-                  <div className="font-black text-sm">Anno {folder.year}</div>
-                  <div
-                    className={`text-[10px] font-medium ${
-                      isSelected ? 'text-slate-300' : 'text-slate-500'
-                    }`}
-                  >
-                    {folder.deliveredCount}/{folder.totalExpectedRows} cons. ({pct}%)
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-        <form onSubmit={handleSearchSubmit} className="flex flex-col sm:flex-row gap-2">
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Cerca per Ragione Sociale cliente, provincia, agente, catalogo o note..."
-              value={searchInput}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-            />
-          </div>
-          <button
-            type="submit"
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl flex items-center justify-center space-x-1.5 shadow-sm"
+        <div className="flex flex-wrap gap-2">
+          <input
+            type="text"
+            placeholder="Cerca cliente, agente, azienda..."
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            className="flex-1 min-w-[200px] px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl"
+          />
+          <select
+            value={selectedYearFolder}
+            onChange={(e) => setSelectedYearFolder(e.target.value)}
+            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
           >
-            <Search className="w-3.5 h-3.5" />
-            <span>Cerca</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleResetFilters}
-            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl flex items-center justify-center space-x-1"
-            title="Azzera filtri"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Azzera</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleExportRegistryExcel}
-            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center justify-center space-x-1.5 shadow-sm transition-colors"
-            title="Esporta i risultati filtrati in Excel"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Esporta Excel</span>
-          </button>
-        </form>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-1">
+            <option value="all">Tutti gli Anni</option>
+            {availableYears.map((yr) => (
+              <option key={yr} value={yr}>
+                Anno {yr}
+              </option>
+            ))}
+          </select>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl font-semibold text-slate-700"
+            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
           >
-            <option value="all">Stato: Tutti ({totalFilteredCount})</option>
-            <option value="delivered">✓ Solo Consegnati ({deliveredFilteredCount})</option>
-            <option value="missing">⏳ Solo Mancanti / Da Consegnare ({missingFilteredCount})</option>
+            <option value="all">Tutti ({unifiedRows.length})</option>
+            <option value="delivered">Solo Consegnati</option>
+            <option value="missing">Solo Mancanti</option>
           </select>
-
           <select
             value={companyFilter}
-            onChange={(e) => {
-              setCompanyFilter(e.target.value);
-              setUpdateFilter('');
-            }}
-            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-700"
+            onChange={(e) => setCompanyFilter(e.target.value)}
+            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
           >
             <option value="">Tutte le Aziende</option>
             {companies.map((c) => (
@@ -2568,24 +1776,10 @@ function DeliveryRegistryTab({
               </option>
             ))}
           </select>
-
-          <select
-            value={updateFilter}
-            onChange={(e) => setUpdateFilter(e.target.value)}
-            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-700"
-          >
-            <option value="">Tutti gli Aggiornamenti</option>
-            {availableUpdates.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.title} ({u.year || new Date().getFullYear()})
-              </option>
-            ))}
-          </select>
-
           <select
             value={agentFilter}
             onChange={(e) => setAgentFilter(e.target.value)}
-            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-700"
+            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
           >
             <option value="">Tutti gli Agenti</option>
             {agents
@@ -2596,231 +1790,102 @@ function DeliveryRegistryTab({
                 </option>
               ))}
           </select>
-
-          <select
-            value={provinceFilter}
-            onChange={(e) => setProvinceFilter(e.target.value)}
-            className="py-2 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-700"
+          <button
+            type="button"
+            onClick={handleExport}
+            className="px-3.5 py-2 bg-emerald-600 text-white font-bold text-xs rounded-xl flex items-center space-x-1.5"
           >
-            <option value="">Tutte le Province</option>
-            {availableProvinces.map((prov) => (
-              <option key={prov} value={prov}>
-                Prov. {prov}
-              </option>
-            ))}
-          </select>
-
-          <label className="flex items-center space-x-2 px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={onlyAlertsFilter}
-              onChange={(e) => setOnlyAlertsFilter(e.target.checked)}
-              className="rounded border-slate-300 text-indigo-600"
-            />
-            <span className="truncate">Solo Alert / Note</span>
-          </label>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 text-xs">
-          <div className="flex flex-wrap items-center gap-3">
-            {selectedYearFolder !== 'all' && (
-              <span className="inline-flex items-center font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200">
-                <FolderOpen className="w-3.5 h-3.5 mr-1.5" />
-                Cartella Anno {selectedYearFolder}
-              </span>
-            )}
-            <span className="inline-flex items-center font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-              <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-              Consegnati: {deliveredFilteredCount}
-            </span>
-            <span className="inline-flex items-center font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
-              <Clock className="w-3.5 h-3.5 mr-1.5" />
-              Da Consegnare (Mancanti): {missingFilteredCount}
-            </span>
-          </div>
-
-          <div className="text-slate-500 font-medium">
-            Totale righe visualizzate: <strong>{totalFilteredCount}</strong>
-          </div>
+            <Download className="w-3.5 h-3.5" />
+            <span>Esporta Excel</span>
+          </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase">
-              <tr>
-                <th className="p-3">Stato</th>
-                <th className="p-3">Cliente</th>
-                <th className="p-3">Azienda / Catalogo (Anno)</th>
-                <th className="p-3">Agente</th>
-                <th className="p-3">Data Consegna</th>
-                <th className="p-3">Materiali Consegnati / Spettanti</th>
-                <th className="p-3">Note / Alert</th>
-                <th className="p-3 text-right">Azioni</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {unifiedRows.length === 0 ? (
-                <tr>
-                  <td colSpan="8" className="p-8 text-center text-slate-400">
-                    {updates.length === 0
-                      ? 'Nessun aggiornamento ancora pubblicato. Crea un catalogo nella scheda "Aziende & Cataloghi".'
-                      : 'Nessun cliente o consegna corrisponde ai filtri selezionati.'}
-                  </td>
-                </tr>
-              ) : (
-                unifiedRows.map((row) => {
-                  const isDelivered = row.status === 'delivered';
-                  return (
-                    <tr
-                      key={row.rowKey}
-                      className={
-                        isDelivered ? 'hover:bg-slate-50' : 'bg-amber-50/30 hover:bg-amber-50/60'
-                      }
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase">
+            <tr>
+              <th className="p-3">Stato</th>
+              <th className="p-3">Cliente</th>
+              <th className="p-3">Azienda / Catalogo</th>
+              <th className="p-3">Agente</th>
+              <th className="p-3">Data</th>
+              <th className="p-3">Materiali</th>
+              <th className="p-3">Note / Alert</th>
+              <th className="p-3 text-right">Azioni</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {unifiedRows.map((row) => (
+              <tr key={row.rowKey} className={row.status === 'delivered' ? '' : 'bg-amber-50/30'}>
+                <td className="p-3">
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      row.status === 'delivered'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    {row.status === 'delivered' ? 'Consegnato' : 'Mancante'}
+                  </span>
+                </td>
+                <td className="p-3 font-bold">
+                  {row.client?.name} ({row.client?.province})
+                </td>
+                <td className="p-3">
+                  {row.company?.name} - <strong>{row.update?.title}</strong>
+                </td>
+                <td className="p-3">{row.agent?.name || '-'}</td>
+                <td className="p-3">
+                  {row.status === 'delivered' ? formatDisplayDate(row.deliveredAt) : 'In attesa'}
+                </td>
+                <td className="p-3">
+                  {row.status === 'delivered' ? (
+                    <div>
+                      <strong>{row.deliveredQty} kit</strong>
+                      {row.deliveredMaterials.map((m, i) => (
+                        <span key={i} className="ml-1 px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px]">
+                          {m.deliveredQty}x {m.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span>Spettanti: {row.expectedQty}</span>
+                  )}
+                </td>
+                <td className="p-3">
+                  {row.alert && (
+                    <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded mr-1">
+                      Alert
+                    </span>
+                  )}
+                  {row.notes || '-'}
+                </td>
+                <td className="p-3 text-right">
+                  {row.status === 'delivered' && (
+                    <button
+                      onClick={() => handleDeleteDelivery(row.delivery.id)}
+                      className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
                     >
-                      <td className="p-3 whitespace-nowrap">
-                        {isDelivered ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                            <CheckCircle2 className="w-3 h-3 mr-1" />
-                            Consegnato
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                            <Clock className="w-3 h-3 mr-1" />
-                            Mancante
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="p-3">
-                        <div className="font-bold text-slate-900">{row.client?.name}</div>
-                        <div className="text-[11px] text-slate-400">
-                          Prov: <strong>{row.client?.province || '-'}</strong>
-                        </div>
-                      </td>
-
-                      <td className="p-3">
-                        <div className="font-semibold text-slate-700">{row.company?.name}</div>
-                        <div className="flex items-center space-x-1.5 mt-0.5">
-                          <span className="text-[11px] font-bold text-indigo-600">
-                            {row.update?.title}
-                          </span>
-                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800">
-                            {row.year}
-                          </span>
-                        </div>
-                      </td>
-
-                      <td className="p-3 font-medium text-slate-700">
-                        {row.agent ? row.agent.name : <span className="text-rose-500">Non assegnato</span>}
-                      </td>
-
-                      <td className="p-3 whitespace-nowrap">
-                        {isDelivered ? (
-                          editingDeliveryId === row.delivery.id ? (
-                            <div className="flex items-center space-x-1">
-                              <input
-                                type="datetime-local"
-                                value={editDateValue}
-                                onChange={(e) => setEditDateValue(e.target.value)}
-                                className="p-1 border border-slate-300 rounded text-[11px]"
-                              />
-                              <button
-                                onClick={() => handleSaveEditedDate(row.delivery.id)}
-                                className="p-1 bg-emerald-600 text-white rounded"
-                                title="Salva data"
-                              >
-                                <Check className="w-3 h-3" />
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center space-x-1.5 text-slate-600 font-medium">
-                              <span>{formatDisplayDate(row.deliveredAt)}</span>
-                              <button
-                                onClick={() => handleStartEditDate(row.delivery)}
-                                className="text-slate-400 hover:text-indigo-600"
-                                title="Modifica data/ora"
-                              >
-                                <Edit3 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          )
-                        ) : (
-                          <span className="text-slate-400 italic">In attesa</span>
-                        )}
-                      </td>
-
-                      <td className="p-3">
-                        {isDelivered ? (
-                          <div className="space-y-1">
-                            <span className="font-bold text-slate-800">
-                              {row.deliveredQty} kit
-                            </span>
-                            {row.deliveredMaterials.length > 0 && (
-                              <div className="flex flex-wrap gap-1">
-                                {row.deliveredMaterials.map((m, i) => (
-                                  <span
-                                    key={i}
-                                    className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-semibold border border-indigo-100"
-                                  >
-                                    {m.deliveredQty}x {m.name}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-amber-700 font-semibold">
-                            Da consegnare: {row.expectedQty}{' '}
-                            {row.expectedQty === 1 ? 'aggiornamento' : 'aggiornamenti'}
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="p-3 max-w-xs">
-                        {row.alert && (
-                          <span className="inline-block text-[10px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded mr-1">
-                            ⚠️ Alert Sede
-                          </span>
-                        )}
-                        <span className="text-slate-600">{row.notes || '-'}</span>
-                      </td>
-
-                      <td className="p-3 text-right whitespace-nowrap">
-                        {isDelivered && (
-                          <button
-                            onClick={() => handleDeleteDelivery(row.delivery.id)}
-                            className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
-                            title="Annulla consegna e riporta come mancante"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-// ----------------------------------------------------------------------------
-// 3B. GESTIONE MAGAZZINO SCORTE
-// ----------------------------------------------------------------------------
 function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseItems }) {
   const [companyId, setCompanyId] = useState('');
   const [materialName, setMaterialName] = useState('');
   const [quantity, setQuantity] = useState(10);
   const [notes, setNotes] = useState('');
-
   const [searchFilter, setSearchFilter] = useState('');
-  const [companyFilter, setCompanyFilter] = useState('');
   const [onlyLowStock, setOnlyLowStock] = useState(false);
 
   const suggestedMaterialNames = useMemo(() => {
@@ -2837,7 +1902,6 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
   const handleAddStockItem = (e) => {
     e.preventDefault();
     if (!materialName.trim()) return;
-
     const cleanName = materialName.trim();
     const qtyToAdd = Math.max(0, parseInt(quantity, 10) || 0);
 
@@ -2857,17 +1921,18 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
       };
       setWarehouseItems(updated);
     } else {
-      const newItem = {
-        id: 'wh_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
-        companyId: companyId || '',
-        name: cleanName,
-        quantity: qtyToAdd,
-        notes: notes.trim(),
-        updatedAt: new Date().toISOString()
-      };
-      setWarehouseItems((prev) => [newItem, ...prev]);
+      setWarehouseItems((prev) => [
+        {
+          id: 'wh_' + Date.now(),
+          companyId: companyId || '',
+          name: cleanName,
+          quantity: qtyToAdd,
+          notes: notes.trim(),
+          updatedAt: new Date().toISOString()
+        },
+        ...prev
+      ]);
     }
-
     setMaterialName('');
     setQuantity(10);
     setNotes('');
@@ -2887,21 +1952,6 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
     );
   };
 
-  const handleSetExactQuantity = (id, rawVal) => {
-    const parsed = Math.max(0, parseInt(rawVal, 10) || 0);
-    setWarehouseItems((prev) =>
-      prev.map((item) =>
-        item.id === id
-          ? { ...item, quantity: parsed, updatedAt: new Date().toISOString() }
-          : item
-      )
-    );
-  };
-
-  const handleDeleteStockItem = (id) => {
-    setWarehouseItems((prev) => prev.filter((item) => item.id !== id));
-  };
-
   const lowStockItems = useMemo(
     () => warehouseItems.filter((w) => Number(w.quantity) < 5),
     [warehouseItems]
@@ -2909,295 +1959,804 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
 
   const filteredItems = useMemo(() => {
     return warehouseItems.filter((item) => {
-      if (companyFilter === '__none__' && item.companyId) return false;
-      if (companyFilter && companyFilter !== '__none__' && item.companyId !== companyFilter) {
-        return false;
-      }
       if (onlyLowStock && Number(item.quantity) >= 5) return false;
       if (searchFilter.trim()) {
         const q = searchFilter.trim().toLowerCase();
-        const comp = companies.find((c) => c.id === item.companyId);
-        const matchName = (item.name || '').toLowerCase().includes(q);
-        const matchNotes = (item.notes || '').toLowerCase().includes(q);
-        const matchComp = (comp?.name || '').toLowerCase().includes(q);
-        if (!matchName && !matchNotes && !matchComp) return false;
+        if (!(item.name || '').toLowerCase().includes(q) && !(item.notes || '').toLowerCase().includes(q)) {
+          return false;
+        }
       }
       return true;
     });
-  }, [warehouseItems, companyFilter, onlyLowStock, searchFilter, companies]);
-
-  const handleExportWarehouseExcel = () => {
-    const headers = [
-      'Azienda Mandante',
-      'Articolo / Materiale a Magazzino',
-      'Giacenza Attuale (pz)',
-      'Stato Scorta',
-      'Note / Posizione',
-      'Ultimo Aggiornamento'
-    ];
-
-    const rows = filteredItems.map((item) => {
-      const comp = companies.find((c) => c.id === item.companyId);
-      const qty = Number(item.quantity) || 0;
-      return [
-        comp ? comp.name : 'Generico / Varie',
-        item.name,
-        qty,
-        qty < 5 ? 'SCORTA BASSA (sotto 5 pz) - DA INTEGRARE' : 'Disponibile',
-        item.notes || '',
-        item.updatedAt ? formatDisplayDate(item.updatedAt) : ''
-      ];
-    });
-
-    exportToExcelCSV('Giacenze_Magazzino_Sede', headers, rows);
-  };
+  }, [warehouseItems, onlyLowStock, searchFilter]);
 
   return (
     <div className="space-y-6">
       {lowStockItems.length > 0 && (
-        <div className="bg-rose-50 border border-rose-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-start space-x-3">
-            <AlertTriangle className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
-            <div>
-              <h4 className="font-bold text-rose-800 text-sm">
-                Attenzione: {lowStockItems.length}{' '}
-                {lowStockItems.length === 1
-                  ? 'materiale sotto le 5 unità'
-                  : 'materiali sotto le 5 unità'}{' '}
-                a magazzino!
-              </h4>
-              <p className="text-xs text-rose-700 mt-0.5">
-                Richiedi il reintegro per:{' '}
-                <strong>
-                  {lowStockItems.map((i) => `${i.name} (${i.quantity} pz)`).join(', ')}
-                </strong>
-              </p>
-            </div>
+        <div className="bg-rose-50 border border-rose-300 rounded-2xl p-4 flex items-center justify-between gap-3">
+          <div className="text-xs text-rose-800">
+            <strong>Attenzione ({lowStockItems.length} articoli sotto 5 pz):</strong>{' '}
+            {lowStockItems.map((i) => `${i.name} (${i.quantity} pz)`).join(', ')}
           </div>
           <button
             type="button"
             onClick={() => setOnlyLowStock(!onlyLowStock)}
-            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl self-start sm:self-center flex-shrink-0"
+            className="px-3 py-1.5 bg-rose-600 text-white text-xs font-bold rounded-xl"
           >
-            {onlyLowStock ? 'Mostra Tutto il Magazzino' : 'Filtra Solo Scorte Basse'}
+            {onlyLowStock ? 'Mostra Tutto' : 'Solo Scorte Basse'}
           </button>
         </div>
       )}
 
-      <form
-        onSubmit={handleAddStockItem}
-        className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4"
-      >
-        <div>
-          <h3 className="font-bold text-slate-900 text-base flex items-center">
-            <Package className="w-5 h-5 mr-2 text-indigo-600" />
-            Carico & Inserimento Materiali a Magazzino
-          </h3>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Inserisci qualsiasi scorta fisica presente in ufficio (es. Listino divani, Fotografico letti, Campione giallo). Se il nome coincide con un materiale degli aggiornamenti, si scaricherà in automatico ad ogni consegna degli agenti!
-          </p>
+      <form onSubmit={handleAddStockItem} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        <h3 className="font-bold text-slate-900 text-base">Carico Materiali a Magazzino</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+          <select
+            value={companyId}
+            onChange={(e) => setCompanyId(e.target.value)}
+            className="sm:col-span-3 p-2.5 text-xs border border-slate-200 rounded-xl bg-white"
+          >
+            <option value="">-- Generico / Tutte --</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <input
+            type="text"
+            required
+            list="warehouse-suggestions"
+            placeholder="Nome materiale (es. Catalogo, Listino)"
+            value={materialName}
+            onChange={(e) => setMaterialName(e.target.value)}
+            className="sm:col-span-4 p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+          <datalist id="warehouse-suggestions">
+            {suggestedMaterialNames.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+          <input
+            type="number"
+            required
+            min="0"
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            className="sm:col-span-2 p-2.5 text-xs border border-slate-200 rounded-xl font-bold text-center"
+          />
+          <input
+            type="text"
+            placeholder="Note / Scaffale"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            className="sm:col-span-3 p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+        </div>
+        <button type="submit" className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
+          + Carica a Magazzino
+        </button>
+      </form>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
+        <div className="p-4 border-b border-slate-100 flex justify-between items-center gap-2">
+          <span className="font-bold text-sm">Giacenze ({filteredItems.length})</span>
+          <input
+            type="text"
+            placeholder="Cerca..."
+            value={searchFilter}
+            onChange={(e) => setSearchFilter(e.target.value)}
+            className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
+          />
+        </div>
+        <table className="w-full text-left text-xs">
+          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase">
+            <tr>
+              <th className="p-3">Materiale</th>
+              <th className="p-3">Azienda</th>
+              <th className="p-3 text-center">Giacenza</th>
+              <th className="p-3">Stato</th>
+              <th className="p-3 text-right">Azioni</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {filteredItems.map((item) => {
+              const comp = companies.find((c) => c.id === item.companyId);
+              const qty = Number(item.quantity) || 0;
+              const isLow = qty < 5;
+              return (
+                <tr key={item.id} className={isLow ? 'bg-rose-50/80' : ''}>
+                  <td className={`p-3 font-bold ${isLow ? 'text-rose-600' : ''}`}>{item.name}</td>
+                  <td className="p-3">{comp ? comp.name : 'Generico'}</td>
+                  <td className="p-3 text-center">
+                    <div className="inline-flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustQuantity(item.id, -1)}
+                        className="w-7 h-7 bg-white border border-slate-200 rounded font-bold"
+                      >
+                        -
+                      </button>
+                      <span className="font-black w-8">{qty}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustQuantity(item.id, +1)}
+                        className="w-7 h-7 bg-white border border-slate-200 rounded font-bold"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </td>
+                  <td className="p-3">
+                    {isLow ? (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-700">
+                        Scorta bassa (sotto 5 pz)
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700">
+                        Disponibile
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => setWarehouseItems((prev) => prev.filter((w) => w.id !== item.id))}
+                      className="p-1.5 text-rose-500 hover:bg-rose-100 rounded-lg"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function AlertsTab({ agents, companies, updates, clients, setClients, deliveries, setDeliveries }) {
+  const alertDeliveries = deliveries.filter((d) => d.delivered && d.alert);
+
+  const handleResolveAlert = (id) => {
+    setDeliveries((prev) => prev.map((d) => (d.id === id ? { ...d, alertResolved: true } : d)));
+  };
+
+  const handleApplyQtyToClientMaster = (del) => {
+    const update = updates.find((u) => u.id === del.updateId);
+    const compId = update ? update.companyId : del.companyId;
+    const newQty = Math.max(1, Number(del.quantity) || 1);
+
+    if (compId && del.clientId) {
+      setClients((prev) =>
+        prev.map((c) => {
+          if (c.id !== del.clientId) return c;
+          const existingIds = Array.isArray(c.companyIds) ? c.companyIds : [];
+          return {
+            ...c,
+            companyIds: existingIds.includes(compId) ? existingIds : [...existingIds, compId],
+            companyConfigs: {
+              ...(c.companyConfigs || {}),
+              [compId]: { enabled: true, quantity: newQty }
+            }
+          };
+        })
+      );
+    }
+    setDeliveries((prev) =>
+      prev.map((d) => (d.id === del.id ? { ...d, alertResolved: true, masterUpdated: true } : d))
+    );
+  };
+
+  return (
+    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+      <h3 className="font-bold text-slate-900 text-base">
+        Alert Materiali & Variazioni Quantità ({alertDeliveries.length})
+      </h3>
+      {alertDeliveries.length === 0 ? (
+        <p className="text-center py-8 text-slate-400 text-sm">Nessun alert aperto.</p>
+      ) : (
+        <div className="divide-y divide-slate-100">
+          {alertDeliveries.map((del) => {
+            const client = clients.find((c) => c.id === del.clientId);
+            const agent = agents.find((a) => a.id === del.agentId);
+            const update = updates.find((u) => u.id === del.updateId);
+            const company = companies.find((c) => c.id === (update ? update.companyId : del.companyId));
+            const deliveredQty = Number(del.quantity) || 1;
+            const currentMasterQty =
+              company && client?.companyConfigs?.[company.id]?.quantity
+                ? Number(client.companyConfigs[company.id].quantity)
+                : 1;
+
+            return (
+              <div key={del.id} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="font-bold text-sm">
+                    {client?.name} ({client?.province}){' '}
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded ml-1 ${
+                        del.alertResolved ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'
+                      }`}
+                    >
+                      {del.alertResolved ? 'Gestito' : 'Da Gestire'}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    Agente: <strong>{agent?.name}</strong> | {company?.name} - {update?.title} | Consegnati:{' '}
+                    <strong>{deliveredQty} kit</strong>
+                  </div>
+                  {del.notes && (
+                    <div className="text-xs bg-amber-50 text-amber-900 p-2 rounded-lg border border-amber-200">
+                      {del.notes}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {currentMasterQty !== deliveredQty && (
+                    <button
+                      type="button"
+                      onClick={() => handleApplyQtyToClientMaster(del)}
+                      className="px-3 py-1.5 bg-indigo-600 text-white rounded-xl text-xs font-bold"
+                    >
+                      Aggiorna Anagrafica a {deliveredQty}
+                    </button>
+                  )}
+                  {!del.alertResolved && (
+                    <button
+                      type="button"
+                      onClick={() => handleResolveAlert(del.id)}
+                      className="px-3 py-1.5 bg-emerald-600 text-white rounded-xl text-xs font-bold"
+                    >
+                      Marca Evaso
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDeliveries((prev) =>
+                        prev.map((d) => (d.id === del.id ? { ...d, alert: false } : d))
+                      )
+                    }
+                    className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveries }) {
+  const [editingClientId, setEditingClientId] = useState(null);
+  const [name, setName] = useState('');
+  const [province, setProvince] = useState('');
+  const [agentId, setAgentId] = useState('');
+  const [companyConfigs, setCompanyConfigs] = useState({});
+  const [searchFilter, setSearchFilter] = useState('');
+
+  const fieldAgents = agents.filter((a) => a.role === 'agent');
+
+  const handleSaveClient = (e) => {
+    e.preventDefault();
+    if (!name.trim() || !province.trim() || !agentId) return;
+    const activeCompanyIds = Object.keys(companyConfigs).filter((id) => companyConfigs[id]?.enabled);
+
+    if (editingClientId) {
+      setClients((prev) =>
+        prev.map((c) =>
+          c.id === editingClientId
+            ? {
+                ...c,
+                name: name.trim(),
+                province: province.trim().toUpperCase(),
+                agentId,
+                companyIds: activeCompanyIds,
+                companyConfigs
+              }
+            : c
+        )
+      );
+      setEditingClientId(null);
+    } else {
+      setClients((prev) => [
+        ...prev,
+        {
+          id: 'cl_' + Date.now(),
+          name: name.trim(),
+          province: province.trim().toUpperCase(),
+          agentId,
+          companyIds: activeCompanyIds,
+          companyConfigs
+        }
+      ]);
+    }
+    setName('');
+    setProvince('');
+    setAgentId('');
+    setCompanyConfigs({});
+  };
+
+  const handleEditClient = (cl) => {
+    setEditingClientId(cl.id);
+    setName(cl.name);
+    setProvince(cl.province || '');
+    setAgentId(cl.agentId || '');
+    const restored = {};
+    (cl.companyIds || []).forEach((id) => {
+      restored[id] = { enabled: true, quantity: cl.companyConfigs?.[id]?.quantity || 1 };
+    });
+    setCompanyConfigs(restored);
+  };
+
+  const filteredClients = clients.filter(
+    (c) =>
+      !searchFilter.trim() ||
+      c.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
+      (c.province && c.province.toLowerCase().includes(searchFilter.toLowerCase()))
+  );
+
+  return (
+    <div className="space-y-6">
+      <form onSubmit={handleSaveClient} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        <h3 className="font-bold text-sm">{editingClientId ? 'Modifica Cliente' : 'Nuovo Cliente'}</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <input
+            type="text"
+            required
+            placeholder="Ragione Sociale"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+          <input
+            type="text"
+            required
+            placeholder="Provincia (es. TV)"
+            value={province}
+            onChange={(e) => setProvince(e.target.value)}
+            className="p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+          <select
+            required
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            className="p-2.5 text-xs border border-slate-200 rounded-xl bg-white"
+          >
+            <option value="">-- Assegna ad Agente --</option>
+            {fieldAgents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-          <div className="sm:col-span-3">
-            <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
-              Azienda (Opzionale)
-            </label>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          {companies.map((comp) => {
+            const cfg = companyConfigs[comp.id] || { enabled: false, quantity: 1 };
+            return (
+              <div key={comp.id} className="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 text-xs">
+                <label className="flex items-center space-x-2 font-bold">
+                  <input
+                    type="checkbox"
+                    checked={cfg.enabled}
+                    onChange={() =>
+                      setCompanyConfigs({
+                        ...companyConfigs,
+                        [comp.id]: { ...cfg, enabled: !cfg.enabled }
+                      })
+                    }
+                  />
+                  <span>{comp.name}</span>
+                </label>
+                {cfg.enabled && (
+                  <input
+                    type="number"
+                    min="1"
+                    value={cfg.quantity}
+                    onChange={(e) =>
+                      setCompanyConfigs({
+                        ...companyConfigs,
+                        [comp.id]: { ...cfg, quantity: Math.max(1, parseInt(e.target.value, 10) || 1) }
+                      })
+                    }
+                    className="w-12 p-1 border rounded text-center font-bold"
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <button type="submit" className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
+          {editingClientId ? 'Salva Modifiche' : '+ Salva Cliente'}
+        </button>
+      </form>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
+        <div className="p-4 border-b border-slate-100 flex justify-between items-center">
+          <span className="font-bold text-sm">Clienti ({filteredClients.length})</span>
+          <input
+            type="text"
+            placeholder="Cerca..."
+            value={searchFilter}
+            onChange={(e) => setSearchFilter(e.target.value)}
+            className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg"
+          />
+        </div>
+        <table className="w-full text-left text-xs">
+          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase">
+            <tr>
+              <th className="p-3">Cliente</th>
+              <th className="p-3">Prov</th>
+              <th className="p-3">Agente</th>
+              <th className="p-3">Aziende & Spettanze</th>
+              <th className="p-3 text-right">Azioni</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {filteredClients.map((c) => {
+              const ag = agents.find((a) => a.id === c.agentId);
+              return (
+                <tr key={c.id}>
+                  <td className="p-3 font-bold">{c.name}</td>
+                  <td className="p-3">{c.province}</td>
+                  <td className="p-3 text-indigo-600 font-medium">{ag ? ag.name : '-'}</td>
+                  <td className="p-3">
+                    {(c.companyIds || []).map((id) => {
+                      const comp = companies.find((co) => co.id === id);
+                      return comp ? (
+                        <span key={id} className="mr-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold">
+                          {comp.name}: {c.companyConfigs?.[id]?.quantity || 1} pz
+                        </span>
+                      ) : null;
+                    })}
+                  </td>
+                  <td className="p-3 text-right space-x-1">
+                    <button onClick={() => handleEditClient(c)} className="p-1.5 text-slate-500 hover:text-indigo-600">
+                      <Edit3 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setClients((prev) => prev.filter((cl) => cl.id !== c.id));
+                        setDeliveries((prev) => prev.filter((d) => d.clientId !== c.id));
+                      }}
+                      className="p-1.5 text-rose-500"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, setDeliveries }) {
+  const [companyName, setCompanyName] = useState('');
+  const [companyCode, setCompanyCode] = useState('');
+  const [selectedCompanyId, setSelectedCompanyId] = useState('');
+  const [updateTitle, setUpdateTitle] = useState('');
+  const [updateYear, setUpdateYear] = useState(String(new Date().getFullYear()));
+  const [contentItems, setContentItems] = useState([{ id: 'item_init_1', name: 'Catalogo', qty: 1 }]);
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemQty, setNewItemQty] = useState(1);
+
+  const handleSaveCompany = (e) => {
+    e.preventDefault();
+    if (!companyName.trim()) return;
+    setCompanies((prev) => [
+      ...prev,
+      {
+        id: 'comp_' + Date.now(),
+        name: companyName.trim(),
+        code: companyCode.trim() || companyName.substring(0, 3).toUpperCase()
+      }
+    ]);
+    setCompanyName('');
+    setCompanyCode('');
+  };
+
+  const handleAddContentItem = () => {
+    if (!newItemName.trim()) return;
+    setContentItems((prev) => [
+      ...prev,
+      { id: 'item_' + Date.now(), name: newItemName.trim(), qty: Math.max(1, parseInt(newItemQty, 10) || 1) }
+    ]);
+    setNewItemName('');
+    setNewItemQty(1);
+  };
+
+  const handleSaveUpdate = (e) => {
+    e.preventDefault();
+    const compId = selectedCompanyId || (companies[0] && companies[0].id);
+    if (!updateTitle.trim() || !compId) return;
+    setUpdates((prev) => [
+      ...prev,
+      {
+        id: 'upd_' + Date.now(),
+        companyId: compId,
+        title: updateTitle.trim(),
+        year: String(updateYear || new Date().getFullYear()),
+        contentItems: [...contentItems],
+        createdAt: new Date().toISOString()
+      }
+    ]);
+    setUpdateTitle('');
+    setContentItems([{ id: 'item_' + Date.now(), name: 'Catalogo', qty: 1 }]);
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="lg:col-span-5 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        <h3 className="font-bold text-sm">1. Aziende Mandanti</h3>
+        <form onSubmit={handleSaveCompany} className="space-y-2.5">
+          <input
+            type="text"
+            required
+            placeholder="Nome Azienda"
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+          <input
+            type="text"
+            placeholder="Sigla (es. LCF)"
+            value={companyCode}
+            onChange={(e) => setCompanyCode(e.target.value)}
+            className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+          <button type="submit" className="w-full py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
+            + Aggiungi Azienda
+          </button>
+        </form>
+        <div className="divide-y divide-slate-100">
+          {companies.map((comp) => (
+            <div key={comp.id} className="py-2.5 flex justify-between items-center text-sm font-bold">
+              <span>{comp.name}</span>
+              <button
+                onClick={() => {
+                  setCompanies((prev) => prev.filter((c) => c.id !== comp.id));
+                  setUpdates((prev) => prev.filter((u) => u.companyId !== comp.id));
+                }}
+                className="p-1.5 text-rose-500"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        <h3 className="font-bold text-sm">2. Pubblica Aggiornamento / Catalogo</h3>
+        <form onSubmit={handleSaveUpdate} className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
             <select
-              value={companyId}
-              onChange={(e) => setCompanyId(e.target.value)}
-              className="w-full p-2.5 text-xs border border-slate-200 rounded-xl bg-white"
+              required
+              value={selectedCompanyId || (companies[0] && companies[0].id) || ''}
+              onChange={(e) => setSelectedCompanyId(e.target.value)}
+              className="sm:col-span-5 p-2.5 text-xs border border-slate-200 rounded-xl bg-white"
             >
-              <option value="">-- Generico / Tutte --</option>
+              <option value="">-- Azienda --</option>
               {companies.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
               ))}
             </select>
-          </div>
-
-          <div className="sm:col-span-4">
-            <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
-              Nome Materiale / Scorta (Campo Libero)
-            </label>
             <input
               type="text"
               required
-              list="warehouse-material-suggestions"
-              placeholder="Es. Listino divani, Campione rosso, Catalogo..."
-              value={materialName}
-              onChange={(e) => setMaterialName(e.target.value)}
-              className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
+              placeholder="Titolo Aggiornamento"
+              value={updateTitle}
+              onChange={(e) => setUpdateTitle(e.target.value)}
+              className="sm:col-span-5 p-2.5 text-xs border border-slate-200 rounded-xl"
             />
-            <datalist id="warehouse-material-suggestions">
-              {suggestedMaterialNames.map((sName) => (
-                <option key={sName} value={sName} />
-              ))}
-            </datalist>
-          </div>
-
-          <div className="sm:col-span-2">
-            <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
-              Quantità (pz)
-            </label>
             <input
               type="number"
               required
-              min="0"
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-              className="w-full p-2.5 text-xs border border-slate-200 rounded-xl font-bold text-center"
+              value={updateYear}
+              onChange={(e) => setUpdateYear(e.target.value)}
+              className="sm:col-span-2 p-2.5 text-xs border border-slate-200 rounded-xl text-center font-bold"
             />
           </div>
 
-          <div className="sm:col-span-3">
-            <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
-              Note / Scaffale
-            </label>
-            <input
-              type="text"
-              placeholder="Es. Scaffale B, Colore giallo..."
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[11px] text-slate-400">
-            Suggerimento: se inserisci un materiale già presente per la stessa azienda, la quantità verrà sommata alla giacenza esistente.
-          </span>
-          <button
-            type="submit"
-            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm"
-          >
-            + Aggiungi / Carica a Magazzino
-          </button>
-        </div>
-      </form>
-
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h4 className="font-bold text-sm text-slate-900">
-              Giacenze Attuali a Magazzino ({filteredItems.length})
-            </h4>
-            <p className="text-[11px] text-slate-400">
-              Gli articoli con meno di 5 unità vengono evidenziati automaticamente in rosso
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 sm:w-52">
-              <Search className="w-4 h-4 absolute left-3 top-2 text-slate-400" />
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
+            <div className="text-xs font-bold">Distinta Materiali per 1 Kit:</div>
+            <div className="flex flex-wrap gap-2">
+              {contentItems.map((it) => (
+                <span key={it.id} className="bg-white border px-2.5 py-1 rounded-lg text-xs font-bold">
+                  {it.qty}x {it.name}{' '}
+                  <button
+                    type="button"
+                    onClick={() => setContentItems((prev) => prev.filter((x) => x.id !== it.id))}
+                    className="text-rose-500 ml-1"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Cerca materiale..."
-                value={searchFilter}
-                onChange={(e) => setSearchFilter(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
+                placeholder="Materiale (es. Listino)"
+                value={newItemName}
+                onChange={(e) => setNewItemName(e.target.value)}
+                className="flex-1 p-2 text-xs bg-white border rounded-xl"
               />
-            </div>
-
-            <select
-              value={companyFilter}
-              onChange={(e) => setCompanyFilter(e.target.value)}
-              className="py-1.5 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
-            >
-              <option value="">Tutte le Aziende</option>
-              <option value="__none__">Solo Generico / Varie</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-
-            <label className="flex items-center space-x-1.5 px-2.5 py-1.5 bg-rose-50/70 border border-rose-200 rounded-xl text-xs font-semibold text-rose-700 cursor-pointer">
               <input
-                type="checkbox"
-                checked={onlyLowStock}
-                onChange={(e) => setOnlyLowStock(e.target.checked)}
-                className="rounded border-rose-300 text-rose-600"
+                type="number"
+                min="1"
+                value={newItemQty}
+                onChange={(e) => setNewItemQty(e.target.value)}
+                className="w-16 p-2 text-xs bg-white border rounded-xl text-center font-bold"
               />
-              <span>Solo sotto 5 pz</span>
-            </label>
-
-            <button
-              type="button"
-              onClick={handleExportWarehouseExcel}
-              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 shadow-sm"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Esporta Excel</span>
-            </button>
+              <button
+                type="button"
+                onClick={handleAddContentItem}
+                className="px-3 py-2 bg-slate-800 text-white text-xs font-bold rounded-xl"
+              >
+                + Voce
+              </button>
+            </div>
           </div>
+
+          <button type="submit" className="w-full py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
+            + Pubblica Aggiornamento
+          </button>
+        </form>
+
+        <div className="divide-y divide-slate-100">
+          {updates.map((upd) => {
+            const comp = companies.find((c) => c.id === upd.companyId);
+            return (
+              <div key={upd.id} className="py-2.5 flex justify-between items-center text-xs">
+                <div>
+                  <strong>{upd.title}</strong> ({comp?.name} - {upd.year})
+                </div>
+                <button
+                  onClick={() => {
+                    setUpdates((prev) => prev.filter((u) => u.id !== upd.id));
+                    setDeliveries((prev) => prev.filter((d) => d.updateId !== upd.id));
+                  }}
+                  className="p-1.5 text-rose-500"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            );
+          })}
         </div>
+      </div>
+    </div>
+  );
+}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase">
-              <tr>
-                <th className="p-3">Materiale / Articolo</th>
-                <th className="p-3">Azienda</th>
-                <th className="p-3 text-center">Giacenza Attuale</th>
-                <th className="p-3">Stato Scorta</th>
-                <th className="p-3">Note</th>
-                <th className="p-3 text-right">Azioni</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredItems.length === 0 ? (
-                <tr>
-                  <td colSpan="6" className="p-8 text-center text-slate-400">
-                    Nessun materiale registrato a magazzino. Usa il modulo qui sopra per inserire le tue scorte.
-                  </td>
-                </tr>
-              ) : (
-                filteredItems.map((item) => {
-                  const comp = companies.find((c) => c.id === item.companyId);
-                  const qty = Number(item.quantity) || 0;
-                  const isLowStock = qty < 5;
+function AgentsManagerTab({ agents, setAgents, clients, setClients }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [editingUserId, setEditingUserId] = useState(null);
 
-                  return (
-                    <tr
-                      key={item.id}
-                      className={
-                        isLowStock
-                          ? 'bg-rose-50/80 hover:bg-rose-100/70 transition-colors'
-                          : 'hover:bg-slate-50'
-                      }
-                    >
-                      <td className="p-3">
-                        <div
-                          className={`font-bold text-sm ${
-                            isLowStock ? 'text-rose-600' : 'text-slate-900'
-                          }`}
-                        >
-                          {item.name}
-                        </div>
-                        {item.updatedAt && (
-                          <div className="text-[10px] text-slate-400 mt-0.5">
-                            Aggiornato: {formatDisplayDate(item.updatedAt)}
-                          </div>
-                        )}
-                      </td>
+  const handleSaveUser = (e) => {
+    e.preventDefault();
+    if (!name.trim() || !email.trim() || !password.trim()) return;
+    if (editingUserId) {
+      setAgents((prev) =>
+        prev.map((a) =>
+          a.id === editingUserId
+            ? { ...a, name: name.trim(), email: email.trim(), password: password.trim() }
+            : a
+        )
+      );
+      setEditingUserId(null);
+    } else {
+      setAgents((prev) => [
+        ...prev,
+        {
+          id: 'ag_' + Date.now(),
+          name: name.trim(),
+          email: email.trim(),
+          password: password.trim(),
+          role: 'agent'
+        }
+      ]);
+    }
+    setName('');
+    setEmail('');
+    setPassword('');
+  };
 
-                      <td className="p-3">
-                        {comp ? (
-                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold text-[11px]">
-                            {comp.name}
-                          </span>
-                        ) : (
-                          <span className="text-slate-400 italic">Generico</span>
-                        )}
-                      </td>
+  return (
+    <div className="space-y-6">
+      <form onSubmit={handleSaveUser} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3">
+        <h3 className="font-bold text-sm">
+          {editingUserId ? 'Modifica Credenziali' : 'Crea Account Agente'}
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <input
+            type="text"
+            required
+            placeholder="Nome e Cognome"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+          <input
+            type="email"
+            required
+            placeholder="Email Login"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+          <input
+            type="text"
+            required
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="p-2.5 text-xs border border-slate-200 rounded-xl"
+          />
+        </div>
+        <button type="submit" className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
+          {editingUserId ? 'Salva Credenziali' : '+ Crea Agente'}
+        </button>
+      </form>
 
-                      <td className="p-3">
-                        <div className="flex items-center justify-center space-x-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleAdjustQuantity(item.id, -1)}
-                            className="w-7 h-7 rounded-lg bg-white border
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {agents.map((a) => (
+          <div key={a.id} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-2">
+            <div className="flex justify-between items-center">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">
+                {a.role === 'office' ? 'Sede / Admin' : 'Agente'}
+              </span>
+              <div className="space-x-1">
+                <button
+                  onClick={() => {
+                    setEditingUserId(a.id);
+                    setName(a.name);
+                    setEmail(a.email);
+                    setPassword(a.password);
+                  }}
+                  className="p-1 text-slate-400 hover:text-indigo-600"
+                >
+                  <Edit3 className="w-4 h-4" />
+                </button>
+                {a.role !== 'office' && (
+                  <button
+                    onClick={() => {
+                      setAgents((prev) => prev.filter((x) => x.id !== a.id));
+                      setClients((prev) =>
+                        prev.map((c) => (c.agentId === a.id ? { ...c, agentId: '' } : c))
+                      );
+                    }}
+                    className="p-1 text-rose-500"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="font-bold text-sm">{a.name}</div>
+            <div className="text-xs text-slate-500">{a.email}</div>
+            <div className="text-[11px] font-mono text-slate-400">Pass: {a.password}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
