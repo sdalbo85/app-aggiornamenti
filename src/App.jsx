@@ -1450,6 +1450,7 @@ function OfficeView({
         <ClientsManagerTab
           agents={agents}
           companies={companies}
+          updates={updates}
           clients={clients}
           setClients={setClients}
           setDeliveries={setDeliveries}
