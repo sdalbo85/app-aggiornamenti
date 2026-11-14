@@ -712,16 +712,18 @@ function AgentView({
     return Array.from(yearsSet).sort((a, b) => Number(b) - Number(a));
   }, [updates]);
 
-  const agentClients = useMemo(() => {
-    return clients.filter((c) => {
-      const isAssigned = c.agentId === currentUser.id || c.agentId === currentUser.name;
-      const handlesCompany = Array.isArray(c.companyIds) && c.companyIds.includes(activeCompanyId);
-      const matchesSearch =
-        !searchTerm.trim() ||
-        c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (c.province && c.province.toLowerCase().includes(searchTerm.toLowerCase()));
-      return isAssigned && handlesCompany && matchesSearch;
-    });
+const agentClients = useMemo(() => {
+    return clients
+      .filter((c) => {
+        const isAssigned = c.agentId === currentUser.id || c.agentId === currentUser.name;
+        const handlesCompany = Array.isArray(c.companyIds) && c.companyIds.includes(activeCompanyId);
+        const matchesSearch =
+          !searchTerm.trim() ||
+          c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          (c.province && c.province.toLowerCase().includes(searchTerm.toLowerCase()));
+        return isAssigned && handlesCompany && matchesSearch;
+      })
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'it', { sensitivity: 'base' }));
   }, [clients, currentUser, activeCompanyId, searchTerm]);
 
   const companyUpdates = useMemo(
@@ -2318,12 +2320,14 @@ function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveri
     setCompanyConfigs(restored);
   };
 
-  const filteredClients = clients.filter(
-    (c) =>
-      !searchFilter.trim() ||
-      c.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
-      (c.province && c.province.toLowerCase().includes(searchFilter.toLowerCase()))
-  );
+  const filteredClients = clients
+    .filter(
+      (c) =>
+        !searchFilter.trim() ||
+        c.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
+        (c.province && c.province.toLowerCase().includes(searchFilter.toLowerCase()))
+    )
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'it', { sensitivity: 'base' }));
 
   return (
     <div className="space-y-6">
