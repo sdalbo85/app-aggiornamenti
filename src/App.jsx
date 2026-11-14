@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Building2, Users, FileText, Plus, Trash2, Edit3,
   AlertTriangle, Check, BarChart2, Calendar, Search,
@@ -51,7 +51,6 @@ async function supabaseUpsertKey(key, data) {
   }
 }
 
-// Helper per esportare file CSV compatibile con Microsoft Excel in italiano (separatore ';' e BOM UTF-8)
 function exportToExcelCSV(filename, headers, rows) {
   const escapeCell = (val) => {
     if (val === null || val === undefined) return '""';
@@ -78,7 +77,6 @@ function exportToExcelCSV(filename, headers, rows) {
   URL.revokeObjectURL(url);
 }
 
-// Helper per formattare data/ora per input datetime-local
 function toDateTimeLocal(isoOrLocaleStr) {
   if (!isoOrLocaleStr) {
     const now = new Date();
@@ -110,11 +108,14 @@ function formatDisplayDate(isoOrStr) {
 
 export default function App() {
   const [isOnline, setIsOnline] = useState(true);
-  const [cloudStatus, setCloudStatus] = useState('connecting'); // 'connecting' | 'synced' | 'saving' | 'error'
+  const [cloudStatus, setCloudStatus] = useState('connecting');
   const [cloudErrorMsg, setCloudErrorMsg] = useState('');
   const [isInitialCloudLoaded, setIsInitialCloudLoaded] = useState(false);
 
-  // Utente autenticato corrente (sessione locale sul dispositivo)
+  // Evita che il polling sovrascriva dati mentre è in corso un salvataggio
+  const pendingSavesRef = useRef(0);
+  const lastMutationAtRef = useRef(0);
+
   const [currentUser, setCurrentUser] = useState(() => {
     try {
       const saved = localStorage.getItem('app_current_user');
@@ -124,7 +125,6 @@ export default function App() {
     }
   });
 
-  // Anagrafica Utenti (Sede + Agenti)
   const [agents, setAgents] = useState([
     {
       id: 'ag_sede',
@@ -135,31 +135,28 @@ export default function App() {
     }
   ]);
 
-  // Aziende Mandanti
   const [companies, setCompanies] = useState([]);
-
-  // Aggiornamenti / Cataloghi con Distinta Contenuto
   const [updates, setUpdates] = useState([]);
-
-  // Clienti con configurazione Qtà Spettante per Azienda
   const [clients, setClients] = useState([]);
-
-  // Registro Consegne effettuate
   const [deliveries, setDeliveries] = useState([]);
-
-  // Scorte Magazzino Sede
   const [warehouseItems, setWarehouseItems] = useState([]);
 
-  // Selezioni attive nella Vista Agente
   const [activeCompanyId, setActiveCompanyId] = useState('');
   const [activeUpdateId, setActiveUpdateId] = useState('');
   const [activeAgentYear, setActiveAgentYear] = useState('all');
 
-  // Caricamento iniziale dal Cloud Supabase + sincronizzazione periodica ogni 8 secondi
   const loadFromCloud = async (isFirstLoad = false) => {
+    if (!isFirstLoad) {
+      if (pendingSavesRef.current > 0 || Date.now() - lastMutationAtRef.current < 4000) {
+        return;
+      }
+    }
     try {
       if (isFirstLoad) setCloudStatus('connecting');
       const rows = await supabaseFetchAllStore();
+      if (!isFirstLoad && (pendingSavesRef.current > 0 || Date.now() - lastMutationAtRef.current < 4000)) {
+        return;
+      }
       const map = {};
       rows.forEach((r) => {
         map[r.key] = r.data;
@@ -207,21 +204,31 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Salvataggio sessione login locale
   useEffect(() => {
     try {
       localStorage.setItem('app_current_user', JSON.stringify(currentUser));
     } catch {}
   }, [currentUser]);
 
-  // Funzioni wrapper per salvare immediatamente su Supabase ad ogni modifica
+  const persistKeyToCloud = (key, nextData) => {
+    pendingSavesRef.current += 1;
+    lastMutationAtRef.current = Date.now();
+    setCloudStatus('saving');
+    supabaseUpsertKey(key, nextData)
+      .then(() => {
+        pendingSavesRef.current = Math.max(0, pendingSavesRef.current - 1);
+        if (pendingSavesRef.current === 0) setCloudStatus('synced');
+      })
+      .catch(() => {
+        pendingSavesRef.current = Math.max(0, pendingSavesRef.current - 1);
+        setCloudStatus('error');
+      });
+  };
+
   const updateAgentsCloud = (updater) => {
     setAgents((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      setCloudStatus('saving');
-      supabaseUpsertKey('agents', next)
-        .then(() => setCloudStatus('synced'))
-        .catch(() => setCloudStatus('error'));
+      persistKeyToCloud('agents', next);
       return next;
     });
   };
@@ -229,10 +236,7 @@ export default function App() {
   const updateCompaniesCloud = (updater) => {
     setCompanies((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      setCloudStatus('saving');
-      supabaseUpsertKey('companies', next)
-        .then(() => setCloudStatus('synced'))
-        .catch(() => setCloudStatus('error'));
+      persistKeyToCloud('companies', next);
       return next;
     });
   };
@@ -240,10 +244,7 @@ export default function App() {
   const updateUpdatesCloud = (updater) => {
     setUpdates((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      setCloudStatus('saving');
-      supabaseUpsertKey('updates', next)
-        .then(() => setCloudStatus('synced'))
-        .catch(() => setCloudStatus('error'));
+      persistKeyToCloud('updates', next);
       return next;
     });
   };
@@ -251,10 +252,7 @@ export default function App() {
   const updateClientsCloud = (updater) => {
     setClients((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      setCloudStatus('saving');
-      supabaseUpsertKey('clients', next)
-        .then(() => setCloudStatus('synced'))
-        .catch(() => setCloudStatus('error'));
+      persistKeyToCloud('clients', next);
       return next;
     });
   };
@@ -262,10 +260,7 @@ export default function App() {
   const updateDeliveriesCloud = (updater) => {
     setDeliveries((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      setCloudStatus('saving');
-      supabaseUpsertKey('deliveries', next)
-        .then(() => setCloudStatus('synced'))
-        .catch(() => setCloudStatus('error'));
+      persistKeyToCloud('deliveries', next);
       return next;
     });
   };
@@ -273,15 +268,11 @@ export default function App() {
   const updateWarehouseCloud = (updater) => {
     setWarehouseItems((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      setCloudStatus('saving');
-      supabaseUpsertKey('warehouse', next)
-        .then(() => setCloudStatus('synced'))
-        .catch(() => setCloudStatus('error'));
+      persistKeyToCloud('warehouse', next);
       return next;
     });
   };
 
-  // Allinea azienda attiva
   useEffect(() => {
     if (companies.length > 0 && (!activeCompanyId || !companies.find((c) => c.id === activeCompanyId))) {
       setActiveCompanyId(companies[0].id);
@@ -290,7 +281,6 @@ export default function App() {
     }
   }, [companies, activeCompanyId]);
 
-  // Allinea aggiornamento attivo quando cambia azienda o filtro anno
   useEffect(() => {
     if (activeCompanyId) {
       const companyUpdates = updates.filter((u) => {
@@ -310,7 +300,6 @@ export default function App() {
     }
   }, [activeCompanyId, updates, activeUpdateId, activeAgentYear]);
 
-  // Login & Logout
   const handleLogin = (email, password) => {
     const userMatch = agents.find(
       (a) => a.email.toLowerCase() === email.trim().toLowerCase() && a.password === password
@@ -326,7 +315,6 @@ export default function App() {
     setCurrentUser(null);
   };
 
-  // Crea la distinta materiali di default moltiplicando i pezzi unitari per la quantità kit
   const buildDefaultDeliveredMaterials = (updateObj, kitQuantity) => {
     if (!updateObj || !Array.isArray(updateObj.contentItems) || updateObj.contentItems.length === 0) {
       return [];
@@ -339,23 +327,30 @@ export default function App() {
     }));
   };
 
-  // Aggiorna automaticamente le giacenze di magazzino in base ai materiali consegnati (delta: -1 scarico, +1 ripristino)
+  // Scarico/ripristino magazzino con corrispondenza flessibile sui nomi materiali
   const applyDeliveryToWarehouse = (companyId, updateObj, materialsList, kitQty, direction = -1) => {
-    const normalizeLabel = (str) =>
+    const normalizeWords = (str) =>
       (str || '')
-        .trim()
         .toLowerCase()
-        .replace(/\s+/g, ' ')
-        .replace(/(i|e|o|a)$/, '');
+        .replace(/[^a-z0-9àèéìòù\s]/gi, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3)
+        .map((w) => w.replace(/(i|e|o|a)$/, ''));
 
     const isMatchingName = (rawA, rawB) => {
       const a = (rawA || '').trim().toLowerCase();
       const b = (rawB || '').trim().toLowerCase();
       if (!a || !b) return false;
       if (a === b) return true;
-      const stemA = normalizeLabel(a);
-      const stemB = normalizeLabel(b);
-      return stemA.length >= 4 && stemA === stemB;
+      if (a.length >= 4 && b.includes(a)) return true;
+      if (b.length >= 4 && a.includes(b)) return true;
+
+      const wordsA = normalizeWords(a);
+      const wordsB = normalizeWords(b);
+      if (wordsA.length === 0 || wordsB.length === 0) return false;
+      const common = wordsA.filter((w) => wordsB.includes(w));
+      const minLen = Math.min(wordsA.length, wordsB.length);
+      return common.length >= minLen && common.length > 0;
     };
 
     const safeKitQty = Math.max(1, Number(kitQty) || 1);
@@ -363,10 +358,13 @@ export default function App() {
 
     if (Array.isArray(materialsList) && materialsList.length > 0) {
       materialsList.forEach((m) => {
-        itemsToAdjust.push({
-          name: m.name,
-          qty: Number(m.deliveredQty) || 0
-        });
+        const q = Number(m.deliveredQty);
+        if (q > 0) {
+          itemsToAdjust.push({
+            name: m.name,
+            qty: q
+          });
+        }
       });
     }
 
@@ -407,7 +405,6 @@ export default function App() {
     );
   };
 
-  // Toggle spunta consegna rapida
   const handleToggleDelivery = (clientId, updateId, defaultTargetQty = 1) => {
     if (!currentUser) return;
     const existingIndex = deliveries.findIndex(
@@ -451,7 +448,6 @@ export default function App() {
     }
   };
 
-  // Salvataggio dettagli consegna (quantità kit, singoli materiali, data/ora, note, alert)
   const handleUpdateDeliveryDetails = (
     clientId,
     updateId,
@@ -474,13 +470,25 @@ export default function App() {
     const expectedQty = clientObj?.companyConfigs?.[compId]?.quantity
       ? Math.max(1, Number(clientObj.companyConfigs[compId].quantity))
       : 1;
-    const isQtyModified = safeQty !== expectedQty;
-    const effectiveAlert = !!alert || isQtyModified;
 
     const finalMaterials =
       deliveredMaterials && deliveredMaterials.length > 0
         ? deliveredMaterials
         : buildDefaultDeliveredMaterials(updateObj, safeQty);
+
+    const hasMaterialQtyVariation = finalMaterials.some(
+      (m) => Number(m.deliveredQty) !== (Number(m.unitQty) || 1) * expectedQty
+    );
+    const isKitQtyModified = safeQty !== expectedQty;
+    const isAnyQtyModified = isKitQtyModified || hasMaterialQtyVariation;
+    const effectiveAlert = !!alert || isAnyQtyModified;
+
+    const autoVariationSummary = hasMaterialQtyVariation && !isKitQtyModified
+      ? `Modifica materiali: ${finalMaterials
+          .map((m) => `${m.deliveredQty}x ${m.name} (previsti ${(Number(m.unitQty) || 1) * expectedQty})`)
+          .join(', ')}`
+      : '';
+    const finalNotes = [notes, autoVariationSummary].filter(Boolean).join(' — ');
 
     if (existingIndex >= 0) {
       const updated = [...deliveries];
@@ -494,15 +502,19 @@ export default function App() {
       );
       applyDeliveryToWarehouse(compId, updateObj, finalMaterials, safeQty, -1);
 
-      const qtyChangedFromPrev = prevRec.quantity !== safeQty;
+      const qtyChangedFromPrev =
+        prevRec.quantity !== safeQty ||
+        JSON.stringify(prevRec.deliveredMaterials || []) !== JSON.stringify(finalMaterials);
+
       updated[existingIndex] = {
         ...prevRec,
         delivered: true,
         quantity: safeQty,
         expectedQuantityAtDelivery: expectedQty,
-        qtyVariationAlert: isQtyModified,
+        qtyVariationAlert: isKitQtyModified,
+        materialVariationAlert: hasMaterialQtyVariation,
         deliveredMaterials: finalMaterials,
-        notes: notes || '',
+        notes: finalNotes,
         alert: effectiveAlert,
         alertResolved: effectiveAlert ? (qtyChangedFromPrev ? false : prevRec.alertResolved) : false,
         deliveredAt: dateIso
@@ -519,9 +531,10 @@ export default function App() {
         deliveredAt: dateIso,
         quantity: safeQty,
         expectedQuantityAtDelivery: expectedQty,
-        qtyVariationAlert: isQtyModified,
+        qtyVariationAlert: isKitQtyModified,
+        materialVariationAlert: hasMaterialQtyVariation,
         deliveredMaterials: finalMaterials,
-        notes: notes || '',
+        notes: finalNotes,
         alert: effectiveAlert,
         alertResolved: false
       };
@@ -551,7 +564,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-slate-100 text-slate-800 font-sans flex flex-col">
-      {/* Header Principale */}
       <header className="bg-slate-900 text-white shadow-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-3 sm:px-4 py-3 flex justify-between items-center gap-2">
           <div className="flex items-center space-x-2.5 min-w-0">
@@ -571,7 +583,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center space-x-2 sm:space-x-3 flex-shrink-0">
-            {/* Stato Sincronizzazione Cloud Supabase */}
             <button
               type="button"
               onClick={() => loadFromCloud(false)}
@@ -600,7 +611,6 @@ export default function App() {
               </span>
             </button>
 
-            {/* Profilo e Logout */}
             <div className="flex items-center space-x-2 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700">
               <div className="text-xs text-right hidden sm:block">
                 <div className="font-bold text-white">{currentUser.name}</div>
@@ -622,7 +632,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Contenuto Principale */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 py-4 sm:p-6 overflow-x-hidden">
         {currentUser.role === 'agent' ? (
           <AgentView
@@ -667,7 +676,7 @@ export default function App() {
 }
 
 // ----------------------------------------------------------------------------
-// SCHERMATA DI LOGIN (SICURA PER PRODUZIONE)
+// SCHERMATA DI LOGIN
 // ----------------------------------------------------------------------------
 function LoginScreen({ onLogin, cloudStatus, cloudErrorMsg }) {
   const [email, setEmail] = useState('');
@@ -771,7 +780,7 @@ function LoginScreen({ onLogin, cloudStatus, cloudErrorMsg }) {
 }
 
 // ----------------------------------------------------------------------------
-// VISTA AGENTE (PROFILATA + CONSEGNA DETTAGLIATA MATERIALI)
+// VISTA AGENTE
 // ----------------------------------------------------------------------------
 function AgentView({
   currentUser,
@@ -836,7 +845,6 @@ function AgentView({
 
   return (
     <div className="space-y-5 max-w-full overflow-x-hidden">
-      {/* Banner Agente Loggato */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-3 min-w-0">
           <div className="bg-indigo-600 p-2.5 rounded-full text-white shadow-sm flex-shrink-0">
@@ -863,7 +871,6 @@ function AgentView({
         </div>
       </div>
 
-      {/* 1. SELEZIONA AZIENDA MANDANTE */}
       <div className="space-y-2">
         <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
           1. Seleziona Azienda Mandante
@@ -895,7 +902,6 @@ function AgentView({
         )}
       </div>
 
-      {/* 2. SELEZIONA AGGIORNAMENTO E VISUALIZZA CONTENUTO STANDARD */}
       {activeCompanyId && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-3.5 sm:p-4 space-y-3.5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
@@ -1049,14 +1055,13 @@ function AgentView({
         </div>
       )}
 
-      {/* 3. ELENCO CLIENTI DA SERVIRE */}
       {activeCompanyId && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
             <div>
               <h2 className="text-sm font-bold text-slate-800">3. Elenco Clienti da Servire</h2>
               <p className="text-xs text-slate-400">
-                Spunta il cliente o apri i dettagli per personalizzare i singoli materiali lasciati
+                Spunta il cliente per consegna standard oppure apri "Dettagli / Materiali" e premi "Conferma & Salva"
               </p>
             </div>
 
@@ -1128,7 +1133,7 @@ function AgentView({
   );
 }
 
-// Singola Riga Cliente nella Vista Agente con Personalizzazione Materiali Granulare
+// Singola Riga Cliente nella Vista Agente
 function ClientDeliveryRow({
   client,
   currentUpdate,
@@ -1211,11 +1216,15 @@ function ClientDeliveryRow({
 
     onSaveDetails(quantity, cleanedMaterials, notes, alert, isoDate);
     setSavedBadge(true);
-    setTimeout(() => setSavedBadge(false), 2000);
+    setTimeout(() => setSavedBadge(false), 2500);
   };
 
   const isDelivered = !!delivery;
-  const isQtyDifferentFromExpected = quantity !== defaultTargetQty;
+  const isKitQtyDifferent = quantity !== defaultTargetQty;
+  const isAnyMaterialDifferent = materialsState.some(
+    (m) => Number(m.deliveredQty) !== (Number(m.unitQty) || 1) * defaultTargetQty
+  );
+  const willTriggerAutoAlert = isKitQtyDifferent || isAnyMaterialDifferent;
 
   return (
     <div className="py-3.5 space-y-3">
@@ -1343,7 +1352,7 @@ function ClientDeliveryRow({
                   Dettaglio Singoli Materiali Consegnati al Cliente
                 </span>
                 <span className="text-[10px] text-slate-400">
-                  Modificabile singolarmente (es. più campionari)
+                  Modificabile singolarmente
                 </span>
               </div>
 
@@ -1411,8 +1420,8 @@ function ClientDeliveryRow({
               <label className="flex items-center space-x-2 cursor-pointer text-amber-700 font-semibold">
                 <input
                   type="checkbox"
-                  checked={alert || isQtyDifferentFromExpected}
-                  disabled={isQtyDifferentFromExpected}
+                  checked={alert || willTriggerAutoAlert}
+                  disabled={willTriggerAutoAlert}
                   onChange={(e) => setAlert(e.target.checked)}
                   className="rounded border-amber-300 text-amber-600 focus:ring-amber-500"
                 />
@@ -1421,16 +1430,16 @@ function ClientDeliveryRow({
                   Segnala Alert a Sede (Materiale Mancante / Extra)
                 </span>
               </label>
-              {isQtyDifferentFromExpected && (
+              {willTriggerAutoAlert && (
                 <p className="text-[11px] text-indigo-700 font-semibold pl-5">
-                  ℹ️ Alert automatico attivo: hai modificato la quantità da {defaultTargetQty} a {quantity} kit (la Sede potrà aggiornare l'anagrafica).
+                  Alert automatico attivo: premi "Conferma & Salva" per inviare la segnalazione alla Sede.
                 </p>
               )}
             </div>
 
             <div className="flex items-center space-x-2 self-end sm:self-auto">
               {savedBadge && (
-                <span className="text-emerald-600 font-bold text-xs">✓ Salvato!</span>
+                <span className="text-emerald-600 font-bold text-xs">✓ Salvato e inviato!</span>
               )}
               <button
                 type="button"
@@ -1741,7 +1750,7 @@ function DashboardTab({
 }
 
 // ----------------------------------------------------------------------------
-// 2. FABBISOGNO & TOTALI PER AZIENDA E TITOLO AGGIORNAMENTO
+// 2. FABBISOGNO & TOTALI
 // ----------------------------------------------------------------------------
 function RequirementsTotalsTab({ companies, updates, clients, deliveries }) {
   const [selectedCompanyFilter, setSelectedCompanyFilter] = useState('');
@@ -2132,7 +2141,7 @@ function RequirementsTotalsTab({ companies, updates, clients, deliveries }) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. REGISTRO CONSEGNE & CLIENTI MANCANTI CON CARTELLE ANNUALI, FILTRI E RICERCA
+// 3. REGISTRO CONSEGNE & CLIENTI MANCANTI
 // ----------------------------------------------------------------------------
 function DeliveryRegistryTab({
   agents,
@@ -2802,7 +2811,7 @@ function DeliveryRegistryTab({
 }
 
 // ----------------------------------------------------------------------------
-// 3B. GESTIONE MAGAZZINO SCORTE & SCARICO AUTOMATICO DA CONSEGNE
+// 3B. GESTIONE MAGAZZINO SCORTE
 // ----------------------------------------------------------------------------
 function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseItems }) {
   const [companyId, setCompanyId] = useState('');
@@ -3058,7 +3067,7 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-[11px] text-slate-400">
-            💡 Suggerimento: se inserisci un materiale già presente per la stessa azienda, la quantità verrà sommata alla giacenza esistente.
+            Suggerimento: se inserisci un materiale già presente per la stessa azienda, la quantità verrà sommata alla giacenza esistente.
           </span>
           <button
             type="submit"
@@ -3191,1291 +3200,4 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
                           <button
                             type="button"
                             onClick={() => handleAdjustQuantity(item.id, -1)}
-                            className="w-7 h-7 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 font-bold text-slate-700"
-                            title="Scarica 1 pezzo"
-                          >
-                            -
-                          </button>
-                          <input
-                            type="number"
-                            min="0"
-                            value={qty}
-                            onChange={(e) => handleSetExactQuantity(item.id, e.target.value)}
-                            className={`w-16 p-1 text-center font-black text-sm rounded-lg border ${
-                              isLowStock
-                                ? 'bg-white border-rose-300 text-rose-600'
-                                : 'bg-white border-slate-200 text-slate-900'
-                            }`}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleAdjustQuantity(item.id, +1)}
-                            className="w-7 h-7 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 font-bold text-slate-700"
-                            title="Carica 1 pezzo"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </td>
-
-                      <td className="p-3 whitespace-nowrap">
-                        {isLowStock ? (
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-100 text-rose-700 border border-rose-300">
-                            <AlertTriangle className="w-3.5 h-3.5 mr-1 text-rose-600" />
-                            Scorta bassa (sotto 5 pz)
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            ✓ Disponibile
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="p-3 text-slate-600">{item.notes || '-'}</td>
-
-                      <td className="p-3 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteStockItem(item.id)}
-                          className="p-1.5 text-rose-500 hover:bg-rose-100 rounded-lg"
-                          title="Rimuovi articolo dal magazzino"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ----------------------------------------------------------------------------
-// 4. ALERT MATERIALI SEDE
-// ----------------------------------------------------------------------------
-function AlertsTab({ agents, companies, updates, clients, setClients, deliveries, setDeliveries }) {
-  const alertDeliveries = deliveries.filter((d) => d.delivered && d.alert);
-
-  const handleResolveAlert = (id) => {
-    setDeliveries((prev) =>
-      prev.map((d) => (d.id === id ? { ...d, alertResolved: true } : d))
-    );
-  };
-
-  const handleApplyQtyToClientMaster = (del) => {
-    const update = updates.find((u) => u.id === del.updateId);
-    const compId = update ? update.companyId : del.companyId;
-    const newQty = Math.max(1, Number(del.quantity) || 1);
-
-    if (compId && del.clientId) {
-      setClients((prev) =>
-        prev.map((c) => {
-          if (c.id !== del.clientId) return c;
-          const existingIds = Array.isArray(c.companyIds) ? c.companyIds : [];
-          const nextIds = existingIds.includes(compId) ? existingIds : [...existingIds, compId];
-          return {
-            ...c,
-            companyIds: nextIds,
-            companyConfigs: {
-              ...(c.companyConfigs || {}),
-              [compId]: {
-                ...(c.companyConfigs?.[compId] || { enabled: true }),
-                enabled: true,
-                quantity: newQty
-              }
-            }
-          };
-        })
-      );
-    }
-
-    setDeliveries((prev) =>
-      prev.map((d) =>
-        d.id === del.id ? { ...d, alertResolved: true, masterUpdated: true } : d
-      )
-    );
-  };
-
-  const handleRemoveAlert = (id) => {
-    setDeliveries((prev) =>
-      prev.map((d) =>
-        d.id === id
-          ? { ...d, alert: false, alertResolved: false, qtyVariationAlert: false }
-          : d
-      )
-    );
-  };
-
-  const handleExportAlertsExcel = () => {
-    const headers = [
-      'Stato Alert',
-      'Tipologia Alert',
-      'Data Segnalazione',
-      'Cliente',
-      'Provincia',
-      'Agente',
-      'Azienda Mandante',
-      'Aggiornamento / Catalogo',
-      'Qtà Spettante Originale',
-      'Qtà Consegnata',
-      'Note / Richiesta Materiale'
-    ];
-
-    const rows = alertDeliveries.map((del) => {
-      const client = clients.find((c) => c.id === del.clientId);
-      const agent = agents.find((a) => a.id === del.agentId);
-      const update = updates.find((u) => u.id === del.updateId);
-      const company = companies.find(
-        (c) => c.id === (update ? update.companyId : del.companyId)
-      );
-      const origQty =
-        del.expectedQuantityAtDelivery ||
-        (company && client?.companyConfigs?.[company.id]?.quantity) ||
-        1;
-
-      return [
-        del.alertResolved ? 'Evaso / Aggiornato' : 'DA GESTIRE',
-        del.qtyVariationAlert ? 'Variazione Quantità Kit' : 'Segnalazione Materiale / Note',
-        formatDisplayDate(del.deliveredAt),
-        client?.name || 'N.D.',
-        client?.province || '',
-        agent?.name || 'N.D.',
-        company?.name || '',
-        update?.title || '',
-        origQty,
-        del.quantity || 1,
-        del.notes || ''
-      ];
-    });
-
-    exportToExcelCSV('Alert_Materiali_e_Variazioni', headers, rows);
-  };
-
-  return (
-    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h3 className="font-bold text-slate-900 text-base flex items-center">
-            <AlertTriangle className="w-5 h-5 mr-2 text-amber-500" />
-            Alert Materiali & Variazioni Quantità da Agenti
-          </h3>
-          <p className="text-xs text-slate-500">
-            Gestisci le richieste di materiale extra e aggiorna all'origine le quantità spettanti modificate dagli agenti
-          </p>
-        </div>
-
-        <button
-          type="button"
-          onClick={handleExportAlertsExcel}
-          className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 shadow-sm self-start sm:self-auto"
-        >
-          <Download className="w-3.5 h-3.5" />
-          <span>Esporta Excel</span>
-        </button>
-      </div>
-
-      {alertDeliveries.length === 0 ? (
-        <div className="text-center py-8 text-slate-400 text-sm">
-          Nessun alert materiale o variazione quantità segnalata dagli agenti.
-        </div>
-      ) : (
-        <div className="divide-y divide-slate-100">
-          {alertDeliveries.map((del) => {
-            const client = clients.find((c) => c.id === del.clientId);
-            const agent = agents.find((a) => a.id === del.agentId);
-            const update = updates.find((u) => u.id === del.updateId);
-            const company = companies.find(
-              (c) => c.id === (update ? update.companyId : del.companyId)
-            );
-            const origQty =
-              del.expectedQuantityAtDelivery ||
-              (company && client?.companyConfigs?.[company.id]?.quantity) ||
-              1;
-            const currentMasterQty =
-              company && client?.companyConfigs?.[company.id]?.quantity
-                ? Number(client.companyConfigs[company.id].quantity)
-                : origQty;
-            const deliveredQty = Number(del.quantity) || 1;
-            const hasQtyVariation = del.qtyVariationAlert || deliveredQty !== origQty;
-
-            return (
-              <div
-                key={del.id}
-                className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-              >
-                <div className="space-y-1.5">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="font-bold text-sm text-slate-900">
-                      {client ? `${client.name} (${client.province})` : 'Cliente N.D.'}
-                    </span>
-
-                    {hasQtyVariation && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 border border-indigo-200">
-                        🔄 Variazione Quantità: da {origQty} a {deliveredQty} kit
-                      </span>
-                    )}
-
-                    {del.alertResolved ? (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">
-                        {del.masterUpdated ? '✓ Anagrafica Aggiornata' : '✓ Evaso'}
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800">
-                        Da Gestire
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="text-xs text-slate-500">
-                    Agente: <strong>{agent ? agent.name : 'N.D.'}</strong> | Azienda:{' '}
-                    <strong>{company ? company.name : 'N.D.'}</strong> | Catalogo:{' '}
-                    <strong>{update ? update.title : 'N.D.'}</strong>
-                  </div>
-
-                  {hasQtyVariation && (
-                    <div className="text-[11px] text-slate-600">
-                      Qtà Spettante attuale in anagrafica: <strong>{currentMasterQty} kit</strong> → Consegnati dall'agente: <strong>{deliveredQty} kit</strong>
-                    </div>
-                  )}
-
-                  {del.notes && (
-                    <div className="text-xs bg-amber-50 text-amber-900 border border-amber-200 p-2 rounded-lg font-medium">
-                      "{del.notes}"
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 self-end sm:self-center">
-                  {hasQtyVariation && currentMasterQty !== deliveredQty && (
-                    <button
-                      type="button"
-                      onClick={() => handleApplyQtyToClientMaster(del)}
-                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center shadow-xs"
-                      title="Modifica la Qtà Spettante del cliente in anagrafica"
-                    >
-                      <Check className="w-3.5 h-3.5 mr-1" />
-                      Aggiorna Anagrafica a {deliveredQty}
-                    </button>
-                  )}
-
-                  {!del.alertResolved && (
-                    <button
-                      type="button"
-                      onClick={() => handleResolveAlert(del.id)}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center"
-                    >
-                      <Check className="w-3.5 h-3.5 mr-1" />
-                      Marca Evaso
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveAlert(del.id)}
-                    className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
-                    title="Elimina alert"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ----------------------------------------------------------------------------
-// 5. GESTIONE CLIENTI (CREAZIONE E MODIFICA CON QTÀ SPETTANTI PER AZIENDA)
-// ----------------------------------------------------------------------------
-function ClientsManagerTab({ agents, companies, clients, setClients, deliveries, setDeliveries }) {
-  const [editingClientId, setEditingClientId] = useState(null);
-  const [name, setName] = useState('');
-  const [province, setProvince] = useState('');
-  const [agentId, setAgentId] = useState('');
-  const [companyConfigs, setCompanyConfigs] = useState({});
-  const [searchFilter, setSearchFilter] = useState('');
-
-  const fieldAgents = agents.filter((a) => a.role === 'agent');
-
-  const resetForm = () => {
-    setEditingClientId(null);
-    setName('');
-    setProvince('');
-    setAgentId('');
-    setCompanyConfigs({});
-  };
-
-  const handleSaveClient = (e) => {
-    e.preventDefault();
-    if (!name.trim() || !province.trim() || !agentId) return;
-
-    const activeCompanyIds = Object.keys(companyConfigs).filter(
-      (compId) => companyConfigs[compId]?.enabled
-    );
-
-    if (editingClientId) {
-      setClients((prev) =>
-        prev.map((c) =>
-          c.id === editingClientId
-            ? {
-                ...c,
-                name: name.trim(),
-                province: province.trim().toUpperCase(),
-                agentId,
-                companyIds: activeCompanyIds,
-                companyConfigs
-              }
-            : c
-        )
-      );
-    } else {
-      const newClient = {
-        id: 'cl_' + Date.now(),
-        name: name.trim(),
-        province: province.trim().toUpperCase(),
-        agentId,
-        companyIds: activeCompanyIds,
-        companyConfigs
-      };
-      setClients((prev) => [...prev, newClient]);
-    }
-    resetForm();
-  };
-
-  const handleEditClient = (cl) => {
-    setEditingClientId(cl.id);
-    setName(cl.name);
-    setProvince(cl.province || '');
-    setAgentId(cl.agentId || '');
-    const restoredConfigs = {};
-    (cl.companyIds || []).forEach((compId) => {
-      restoredConfigs[compId] = {
-        enabled: true,
-        quantity: cl.companyConfigs?.[compId]?.quantity || 1
-      };
-    });
-    setCompanyConfigs(restoredConfigs);
-  };
-
-  const handleDeleteClient = (id) => {
-    setClients((prev) => prev.filter((c) => c.id !== id));
-    setDeliveries((prev) => prev.filter((d) => d.clientId !== id));
-  };
-
-  const toggleCompany = (compId) => {
-    const curr = companyConfigs[compId] || { enabled: false, quantity: 1 };
-    setCompanyConfigs({
-      ...companyConfigs,
-      [compId]: { ...curr, enabled: !curr.enabled }
-    });
-  };
-
-  const changeTargetQty = (compId, qty) => {
-    const curr = companyConfigs[compId] || { enabled: true, quantity: 1 };
-    setCompanyConfigs({
-      ...companyConfigs,
-      [compId]: { ...curr, quantity: Math.max(1, parseInt(qty, 10) || 1) }
-    });
-  };
-
-  const filteredClients = clients.filter(
-    (c) =>
-      !searchFilter.trim() ||
-      c.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
-      (c.province && c.province.toLowerCase().includes(searchFilter.toLowerCase()))
-  );
-
-  const handleExportClientsExcel = () => {
-    const headers = [
-      'Ragione Sociale Cliente',
-      'Provincia',
-      'Agente Assegnato',
-      'Aziende Trattate e Qtà Spettanti'
-    ];
-
-    const rows = filteredClients.map((c) => {
-      const ag = agents.find((a) => a.id === c.agentId);
-      const companiesText = (c.companyIds || [])
-        .map((compId) => {
-          const comp = companies.find((co) => co.id === compId);
-          const qty = c.companyConfigs?.[compId]?.quantity || 1;
-          return comp ? `${comp.name} (${qty} kit)` : null;
-        })
-        .filter(Boolean)
-        .join(' | ');
-
-      return [
-        c.name,
-        c.province || '',
-        ag ? ag.name : 'Non assegnato',
-        companiesText || 'Nessuna azienda'
-      ];
-    });
-
-    exportToExcelCSV('Anagrafica_Clienti_e_Spettanze', headers, rows);
-  };
-
-  return (
-    <div className="space-y-6">
-      <form
-        onSubmit={handleSaveClient}
-        className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4"
-      >
-        <div className="flex items-center justify-between">
-          <h3 className="font-bold text-slate-900 text-sm">
-            {editingClientId ? 'Modifica Cliente' : 'Aggiungi Nuovo Cliente'}
-          </h3>
-          {editingClientId && (
-            <button
-              type="button"
-              onClick={resetForm}
-              className="text-xs text-slate-500 hover:text-slate-800 underline"
-            >
-              Annulla Modifica
-            </button>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <input
-            type="text"
-            required
-            placeholder="Ragione Sociale Cliente"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="p-2.5 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500"
-          />
-          <input
-            type="text"
-            required
-            placeholder="Provincia (es. TV, VE, PD)"
-            value={province}
-            onChange={(e) => setProvince(e.target.value)}
-            className="p-2.5 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500"
-          />
-          <select
-            required
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            className="p-2.5 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 bg-white"
-          >
-            <option value="">-- Assegna ad Agente --</option>
-            {fieldAgents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-xs font-bold text-slate-500 uppercase mb-2">
-            Aziende Trattate & Qtà Spettante di Aggiornamenti per Cliente:
-          </label>
-          {companies.length === 0 ? (
-            <p className="text-xs text-amber-600">
-              Inserisci prima le Aziende Mandanti nella scheda "Aziende & Cataloghi".
-            </p>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-              {companies.map((comp) => {
-                const cfg = companyConfigs[comp.id] || { enabled: false, quantity: 1 };
-                return (
-                  <div
-                    key={comp.id}
-                    className={`flex items-center justify-between p-2.5 rounded-xl border text-xs transition-all ${
-                      cfg.enabled
-                        ? 'bg-indigo-50/60 border-indigo-200'
-                        : 'bg-slate-50 border-slate-200'
-                    }`}
-                  >
-                    <label className="flex items-center space-x-2 cursor-pointer font-bold text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={cfg.enabled}
-                        onChange={() => toggleCompany(comp.id)}
-                        className="rounded border-slate-300 text-indigo-600"
-                      />
-                      <span>{comp.name}</span>
-                    </label>
-
-                    {cfg.enabled && (
-                      <div className="flex items-center space-x-1.5">
-                        <span className="text-[10px] text-slate-500 font-bold">Qtà Spettante:</span>
-                        <input
-                          type="number"
-                          min="1"
-                          value={cfg.quantity}
-                          onChange={(e) => changeTargetQty(comp.id, e.target.value)}
-                          className="w-12 p-1 border border-indigo-200 rounded-lg bg-white font-bold text-center text-xs text-indigo-700"
-                        />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <button
-          type="submit"
-          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm"
-        >
-          {editingClientId ? 'Salva Modifiche Cliente' : '+ Salva Cliente'}
-        </button>
-      </form>
-
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <h4 className="font-bold text-sm text-slate-800">
-            Elenco Clienti ({filteredClients.length})
-          </h4>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 sm:w-64">
-              <Search className="w-4 h-4 absolute left-3 top-2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Cerca cliente o provincia..."
-                value={searchFilter}
-                onChange={(e) => setSearchFilter(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={handleExportClientsExcel}
-              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center space-x-1.5 shadow-sm"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Esporta Excel</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase">
-              <tr>
-                <th className="p-3">Ragione Sociale</th>
-                <th className="p-3">Provincia</th>
-                <th className="p-3">Agente Assegnato</th>
-                <th className="p-3">Aziende & Qtà Spettanti</th>
-                <th className="p-3 text-right">Azioni</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredClients.length === 0 ? (
-                <tr>
-                  <td colSpan="5" className="p-6 text-center text-slate-400">
-                    Nessun cliente presente.
-                  </td>
-                </tr>
-              ) : (
-                filteredClients.map((c) => {
-                  const ag = agents.find((a) => a.id === c.agentId);
-                  return (
-                    <tr key={c.id} className="hover:bg-slate-50">
-                      <td className="p-3 font-bold text-slate-900">{c.name}</td>
-                      <td className="p-3 font-semibold text-slate-600">{c.province}</td>
-                      <td className="p-3 font-medium text-indigo-600">
-                        {ag ? ag.name : 'Non assegnato'}
-                      </td>
-                      <td className="p-3">
-                        <div className="flex flex-wrap gap-1.5">
-                          {(c.companyIds || []).map((compId) => {
-                            const comp = companies.find((co) => co.id === compId);
-                            const qty = c.companyConfigs?.[compId]?.quantity || 1;
-                            return comp ? (
-                              <span
-                                key={compId}
-                                className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md text-[10px] font-bold border border-indigo-100"
-                              >
-                                {comp.name}: {qty} pz
-                              </span>
-                            ) : null;
-                          })}
-                        </div>
-                      </td>
-                      <td className="p-3 text-right whitespace-nowrap space-x-1">
-                        <button
-                          onClick={() => handleEditClient(c)}
-                          className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg"
-                          title="Modifica cliente"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteClient(c.id)}
-                          className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
-                          title="Elimina cliente"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ----------------------------------------------------------------------------
-// 6. AZIENDE & AGGIORNAMENTI CON CONTENUTO MATERIALI DETTAGLIATO
-// ----------------------------------------------------------------------------
-function CompaniesUpdatesTab({
-  companies,
-  setCompanies,
-  updates,
-  setUpdates,
-  deliveries,
-  setDeliveries
-}) {
-  const [companyName, setCompanyName] = useState('');
-  const [companyCode, setCompanyCode] = useState('');
-  const [editingCompanyId, setEditingCompanyId] = useState(null);
-
-  const [editingUpdateId, setEditingUpdateId] = useState(null);
-  const [selectedCompanyId, setSelectedCompanyId] = useState('');
-  const [updateTitle, setUpdateTitle] = useState('');
-  const [updateYear, setUpdateYear] = useState(String(new Date().getFullYear()));
-  const [updateListYearFilter, setUpdateListYearFilter] = useState('all');
-  const [contentItems, setContentItems] = useState([
-    { id: 'item_init_1', name: 'Catalogo', qty: 1 }
-  ]);
-  const [newItemName, setNewItemName] = useState('');
-  const [newItemQty, setNewItemQty] = useState(1);
-
-  const handleSaveCompany = (e) => {
-    e.preventDefault();
-    if (!companyName.trim()) return;
-
-    if (editingCompanyId) {
-      setCompanies((prev) =>
-        prev.map((c) =>
-          c.id === editingCompanyId
-            ? {
-                ...c,
-                name: companyName.trim(),
-                code: companyCode.trim() || companyName.substring(0, 3).toUpperCase()
-              }
-            : c
-        )
-      );
-      setEditingCompanyId(null);
-    } else {
-      const newComp = {
-        id: 'comp_' + Date.now(),
-        name: companyName.trim(),
-        code: companyCode.trim() || companyName.substring(0, 3).toUpperCase()
-      };
-      setCompanies((prev) => [...prev, newComp]);
-    }
-    setCompanyName('');
-    setCompanyCode('');
-  };
-
-  const handleEditCompany = (comp) => {
-    setEditingCompanyId(comp.id);
-    setCompanyName(comp.name);
-    setCompanyCode(comp.code || '');
-  };
-
-  const handleDeleteCompany = (id) => {
-    setCompanies((prev) => prev.filter((c) => c.id !== id));
-    setUpdates((prev) => prev.filter((u) => u.companyId !== id));
-  };
-
-  const handleAddContentItem = () => {
-    if (!newItemName.trim()) return;
-    const item = {
-      id: 'item_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
-      name: newItemName.trim(),
-      qty: Math.max(1, parseInt(newItemQty, 10) || 1)
-    };
-    setContentItems((prev) => [...prev, item]);
-    setNewItemName('');
-    setNewItemQty(1);
-  };
-
-  const handleRemoveContentItem = (itemId) => {
-    setContentItems((prev) => prev.filter((i) => i.id !== itemId));
-  };
-
-  const resetUpdateForm = () => {
-    setEditingUpdateId(null);
-    setUpdateTitle('');
-    setUpdateYear(String(new Date().getFullYear()));
-    setContentItems([{ id: 'item_' + Date.now(), name: 'Catalogo', qty: 1 }]);
-    setNewItemName('');
-    setNewItemQty(1);
-  };
-
-  const handleSaveUpdate = (e) => {
-    e.preventDefault();
-    const compId = selectedCompanyId || (companies[0] && companies[0].id);
-    if (!updateTitle.trim() || !compId) return;
-    const cleanYear = String(updateYear || new Date().getFullYear()).trim();
-
-    if (editingUpdateId) {
-      setUpdates((prev) =>
-        prev.map((u) =>
-          u.id === editingUpdateId
-            ? {
-                ...u,
-                companyId: compId,
-                title: updateTitle.trim(),
-                year: cleanYear,
-                contentItems: [...contentItems]
-              }
-            : u
-        )
-      );
-    } else {
-      const newUpd = {
-        id: 'upd_' + Date.now(),
-        companyId: compId,
-        title: updateTitle.trim(),
-        year: cleanYear,
-        contentItems: [...contentItems],
-        createdAt: new Date().toISOString()
-      };
-      setUpdates((prev) => [...prev, newUpd]);
-    }
-    resetUpdateForm();
-  };
-
-  const handleEditUpdate = (upd) => {
-    setEditingUpdateId(upd.id);
-    setSelectedCompanyId(upd.companyId);
-    setUpdateTitle(upd.title);
-    setUpdateYear(String(upd.year || new Date().getFullYear()));
-    setContentItems(
-      Array.isArray(upd.contentItems) && upd.contentItems.length > 0 ? [...upd.contentItems] : []
-    );
-  };
-
-  const handleDeleteUpdate = (id) => {
-    setUpdates((prev) => prev.filter((u) => u.id !== id));
-    setDeliveries((prev) => prev.filter((d) => d.updateId !== id));
-  };
-
-  const updateYearsList = useMemo(() => {
-    const s = new Set();
-    updates.forEach((u) => s.add(String(u.year || new Date().getFullYear())));
-    return Array.from(s).sort((a, b) => Number(b) - Number(a));
-  }, [updates]);
-
-  const filteredUpdatesList = useMemo(() => {
-    if (updateListYearFilter === 'all') return updates;
-    return updates.filter(
-      (u) => String(u.year || new Date().getFullYear()) === updateListYearFilter
-    );
-  }, [updates, updateListYearFilter]);
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-      <div className="lg:col-span-5 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="font-bold text-slate-900 text-sm">
-            {editingCompanyId ? 'Modifica Azienda Mandante' : '1. Aziende Mandanti'}
-          </h3>
-          {editingCompanyId && (
-            <button
-              type="button"
-              onClick={() => {
-                setEditingCompanyId(null);
-                setCompanyName('');
-                setCompanyCode('');
-              }}
-              className="text-xs text-slate-400 hover:text-slate-700 underline"
-            >
-              Annulla
-            </button>
-          )}
-        </div>
-
-        <form onSubmit={handleSaveCompany} className="space-y-2.5">
-          <input
-            type="text"
-            required
-            placeholder="Nome Azienda (es. Le Comfort)"
-            value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
-            className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
-          />
-          <input
-            type="text"
-            placeholder="Sigla Breve (es. LCF)"
-            value={companyCode}
-            onChange={(e) => setCompanyCode(e.target.value)}
-            className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
-          />
-          <button
-            type="submit"
-            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm"
-          >
-            {editingCompanyId ? 'Salva Modifica Azienda' : '+ Aggiungi Azienda'}
-          </button>
-        </form>
-
-        <div className="divide-y divide-slate-100 pt-2">
-          {companies.length === 0 ? (
-            <p className="text-xs text-slate-400 text-center py-4">Nessuna azienda inserita.</p>
-          ) : (
-            companies.map((comp) => (
-              <div key={comp.id} className="py-2.5 flex items-center justify-between">
-                <div>
-                  <span className="font-bold text-sm text-slate-800">{comp.name}</span>
-                  <span className="ml-2 text-xs text-slate-400">({comp.code})</span>
-                </div>
-
-                <div className="flex items-center space-x-1">
-                  <button
-                    onClick={() => handleEditCompany(comp)}
-                    className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg"
-                    title="Modifica azienda"
-                  >
-                    <Edit3 className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleDeleteCompany(comp.id)}
-                    className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
-                    title="Elimina azienda"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="font-bold text-slate-900 text-sm">
-            {editingUpdateId
-              ? 'Modifica Aggiornamento & Distinta Materiali'
-              : '2. Pubblica Aggiornamento / Catalogo'}
-          </h3>
-          {editingUpdateId && (
-            <button
-              type="button"
-              onClick={resetUpdateForm}
-              className="text-xs text-slate-400 hover:text-slate-700 underline"
-            >
-              Annulla
-            </button>
-          )}
-        </div>
-
-        <form onSubmit={handleSaveUpdate} className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-            <div className="sm:col-span-5">
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
-                Azienda Mandante
-              </label>
-              <select
-                required
-                value={selectedCompanyId || (companies[0] && companies[0].id) || ''}
-                onChange={(e) => setSelectedCompanyId(e.target.value)}
-                className="w-full p-2.5 text-xs border border-slate-200 rounded-xl bg-white"
-              >
-                <option value="">-- Seleziona Azienda --</option>
-                {companies.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="sm:col-span-5">
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
-                Titolo Aggiornamento
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="Es. Daytime 2026"
-                value={updateTitle}
-                onChange={(e) => setUpdateTitle(e.target.value)}
-                className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
-              />
-            </div>
-
-            <div className="sm:col-span-2">
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
-                Anno
-              </label>
-              <input
-                type="number"
-                required
-                min="2020"
-                max="2099"
-                value={updateYear}
-                onChange={(e) => setUpdateYear(e.target.value)}
-                className="w-full p-2.5 text-xs border border-slate-200 rounded-xl font-bold text-center"
-              />
-            </div>
-          </div>
-
-          <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3">
-            <div>
-              <span className="block text-xs font-bold text-slate-700">
-                Contenuto di 1 Aggiornamento (Distinta Materiali)
-              </span>
-              <span className="text-[11px] text-slate-400">
-                Specifica cosa contiene ogni singolo aggiornamento (es. 1 Catalogo, 1 Listino, 3 Tirelle tessuto)
-              </span>
-            </div>
-
-            {contentItems.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {contentItems.map((item) => (
-                  <div
-                    key={item.id}
-                    className="inline-flex items-center space-x-2 bg-white border border-indigo-200 text-indigo-900 px-3 py-1.5 rounded-xl text-xs font-bold shadow-2xs"
-                  >
-                    <span className="text-indigo-600">{item.qty}x</span>
-                    <span>{item.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveContentItem(item.id)}
-                      className="text-slate-400 hover:text-rose-500 ml-1"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                type="text"
-                placeholder="Nome materiale (es. Listino, Tirelle tessuto)"
-                value={newItemName}
-                onChange={(e) => setNewItemName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleAddContentItem();
-                  }
-                }}
-                className="flex-1 p-2 text-xs bg-white border border-slate-200 rounded-xl"
-              />
-              <div className="flex items-center space-x-2">
-                <span className="text-[11px] font-bold text-slate-500">Qtà:</span>
-                <input
-                  type="number"
-                  min="1"
-                  value={newItemQty}
-                  onChange={(e) => setNewItemQty(e.target.value)}
-                  className="w-16 p-2 text-xs bg-white border border-slate-200 rounded-xl text-center font-bold"
-                />
-                <button
-                  type="button"
-                  onClick={handleAddContentItem}
-                  className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl"
-                >
-                  + Aggiungi Voce
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm"
-          >
-            {editingUpdateId ? 'Salva Modifiche Aggiornamento' : '+ Pubblica Aggiornamento'}
-          </button>
-        </form>
-
-        <div className="space-y-3 pt-2 border-t border-slate-100">
-          {updateYearsList.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-bold text-slate-400 uppercase mr-1">
-                Cartelle Anno:
-              </span>
-              <button
-                type="button"
-                onClick={() => setUpdateListYearFilter('all')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
-                  updateListYearFilter === 'all'
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                Tutti ({updates.length})
-              </button>
-              {updateYearsList.map((yr) => (
-                <button
-                  key={yr}
-                  type="button"
-                  onClick={() => setUpdateListYearFilter(yr)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center space-x-1 ${
-                    updateListYearFilter === yr
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
-                  }`}
-                >
-                  <Folder className="w-3 h-3" />
-                  <span>{yr}</span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="divide-y divide-slate-100">
-            {filteredUpdatesList.length === 0 ? (
-              <p className="text-xs text-slate-400 text-center py-4">
-                Nessun aggiornamento pubblicato in questa cartella.
-              </p>
-            ) : (
-              filteredUpdatesList.map((upd) => {
-                const comp = companies.find((c) => c.id === upd.companyId);
-                const updYear = upd.year || new Date().getFullYear();
-                return (
-                  <div
-                    key={upd.id}
-                    className="py-3 flex items-start justify-between gap-2"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center space-x-2">
-                        <span className="font-bold text-sm text-slate-900">{upd.title}</span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600">
-                          {comp ? comp.name : 'N.D.'}
-                        </span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
-                          Anno {updYear}
-                        </span>
-                      </div>
-                      {Array.isArray(upd.contentItems) && upd.contentItems.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          {upd.contentItems.map((it) => (
-                            <span
-                              key={it.id}
-                              className="text-[11px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-medium border border-indigo-100"
-                            >
-                              {it.qty}x {it.name}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="flex items-center space-x-1">
-                      <button
-                        onClick={() => handleEditUpdate(upd)}
-                        className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg"
-                        title="Modifica aggiornamento"
-                      >
-                        <Edit3 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteUpdate(upd.id)}
-                        className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
-                        title="Elimina aggiornamento"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ----------------------------------------------------------------------------
-// 7. ANAGRAFICA AGENTI E CREDENZIALI LOGIN (INCLUSA MODIFICA CREDENZIALI SEDE)
-// ----------------------------------------------------------------------------
-function AgentsManagerTab({ agents, setAgents, clients, setClients }) {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [editingUserId, setEditingUserId] = useState(null);
-
-  const handleSaveUser = (e) => {
-    e.preventDefault();
-    if (!name.trim() || !email.trim() || !password.trim()) return;
-
-    if (editingUserId) {
-      setAgents((prev) =>
-        prev.map((a) =>
-          a.id === editingUserId
-            ? {
-                ...a,
-                name: name.trim(),
-                email: email.trim(),
-                password: password.trim()
-              }
-            : a
-        )
-      );
-      setEditingUserId(null);
-    } else {
-      const newAgent = {
-        id: 'ag_' + Date.now(),
-        name: name.trim(),
-        email: email.trim(),
-        password: password.trim(),
-        role: 'agent'
-      };
-      setAgents((prev) => [...prev, newAgent]);
-    }
-    setName('');
-    setEmail('');
-    setPassword('');
-  };
-
-  const handleStartEdit = (user) => {
-    setEditingUserId(user.id);
-    setName(user.name);
-    setEmail(user.email);
-    setPassword(user.password);
-  };
-
-  const handleDeleteAgent = (id) => {
-    setAgents((prev) => prev.filter((a) => a.id !== id));
-    setClients((prev) => prev.map((c) => (c.agentId === id ? { ...c, agentId: '' } : c)));
-  };
-
-  return (
-    <div className="space-y-6">
-      <form
-        onSubmit={handleSaveUser}
-        className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3"
-      >
-        <div className="flex items-center justify-between">
-          <h3 className="font-bold text-slate-900 text-sm">
-            {editingUserId
-              ? 'Modifica Credenziali Utente'
-              : 'Crea Account Agente (Accesso Dedicato iPhone)'}
-          </h3>
-          {editingUserId && (
-            <button
-              type="button"
-              onClick={() => {
-                setEditingUserId(null);
-                setName('');
-                setEmail('');
-                setPassword('');
-              }}
-              className="text-xs text-slate-400 hover:text-slate-700 underline"
-            >
-              Annulla Modifica
-            </button>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <input
-            type="text"
-            required
-            placeholder="Nome e Cognome"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="p-2.5 text-xs border border-slate-200 rounded-xl"
-          />
-          <input
-            type="email"
-            required
-            placeholder="Email Login (es. marco@agenziadalbo.it)"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="p-2.5 text-xs border border-slate-200 rounded-xl"
-          />
-          <input
-            type="text"
-            required
-            placeholder="Password di accesso"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="p-2.5 text-xs border border-slate-200 rounded-xl"
-          />
-        </div>
-        <button
-          type="submit"
-          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm"
-        >
-          {editingUserId ? 'Salva Nuove Credenziali' : '+ Crea Agente & Credenziali'}
-        </button>
-      </form>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-        {agents.map((a) => (
-          <div
-            key={a.id}
-            className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-2"
-          >
-            <div className="flex items-center justify-between">
-              <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                  a.role === 'office'
-                    ? 'bg-purple-100 text-purple-700'
-                    : 'bg-indigo-100 text-indigo-700'
-                }`}
-              >
-                {a.role === 'office' ? 'Sede / Admin' : 'Agente'}
-              </span>
-              <div className="flex items-center space-x-1">
-                <button
-                  onClick={() => handleStartEdit(a)}
-                  className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg"
-                  title="Modifica email o password"
-                >
-                  <Edit3 className="w-4 h-4" />
-                </button>
-                {a.role !== 'office' && (
-                  <button
-                    onClick={() => handleDeleteAgent(a.id)}
-                    className="p-1 text-rose-500 hover:bg-rose-50 rounded-lg"
-                    title="Elimina agente"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <div className="font-bold text-sm text-slate-900">{a.name}</div>
-              <div className="text-xs text-slate-500">{a.email}</div>
-              <div className="text-[11px] font-mono text-slate-400 mt-1">
-                Password: {a.password}
-              </div>
-            </div>
-
-            {a.role === 'agent' && (
-              <div className="text-[11px] text-slate-400 pt-1.5 border-t border-slate-100">
-                Clienti assegnati:{' '}
-                <strong>{clients.filter((c) => c.agentId === a.id).length}</strong>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+                            className="w-7 h-7 rounded-lg bg-white border
