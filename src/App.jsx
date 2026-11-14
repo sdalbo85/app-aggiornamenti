@@ -2300,11 +2300,12 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
   const [agentId, setAgentId] = useState('');
   const [companyConfigs, setCompanyConfigs] = useState({});
   const [expandedCompId, setExpandedCompId] = useState(null);
+  const [newMatInput, setNewMatInput] = useState({});
   const [searchFilter, setSearchFilter] = useState('');
 
   const fieldAgents = agents.filter((a) => a.role === 'agent');
 
-  // Ricava tutti i nomi dei materiali esistenti per ciascuna azienda dai suoi cataloghi
+  // Ricava i materiali dai cataloghi dell'azienda, con voci base di default se non ci sono ancora aggiornamenti
   const companyMaterialsMap = useMemo(() => {
     const map = {};
     companies.forEach((comp) => {
@@ -2316,6 +2317,9 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
             if (it.name) namesSet.add(it.name);
           });
         });
+      if (namesSet.size === 0) {
+        ['Catalogo', 'Campionario', 'Listino'].forEach((def) => namesSet.add(def));
+      }
       map[comp.id] = Array.from(namesSet);
     });
     return map;
@@ -2360,6 +2364,7 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     setAgentId('');
     setCompanyConfigs({});
     setExpandedCompId(null);
+    setNewMatInput({});
   };
 
   const handleEditClient = (cl) => {
@@ -2377,6 +2382,7 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     });
     setCompanyConfigs(restored);
     setExpandedCompId(null);
+    setNewMatInput({});
   };
 
   const handleCustomMatQtyChange = (compId, matName, val) => {
@@ -2393,6 +2399,13 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
         }
       }
     });
+  };
+
+  const handleAddCustomMaterialName = (compId) => {
+    const rawName = (newMatInput[compId] || '').trim();
+    if (!rawName) return;
+    handleCustomMatQtyChange(compId, rawName, 1);
+    setNewMatInput({ ...newMatInput, [compId]: '' });
   };
 
   const filteredClients = clients
@@ -2468,7 +2481,11 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {companies.map((comp) => {
               const cfg = companyConfigs[comp.id] || { enabled: false, quantity: 1, customMaterials: null };
-              const availableMats = companyMaterialsMap[comp.id] || [];
+              const baseMats = companyMaterialsMap[comp.id] || [];
+              const extraCustomKeys = cfg.customMaterials
+                ? Object.keys(cfg.customMaterials).filter((k) => !baseMats.includes(k))
+                : [];
+              const allMats = [...baseMats, ...extraCustomKeys];
               const isExpanded = expandedCompId === comp.id;
               const hasCustom = cfg.customMaterials && Object.keys(cfg.customMaterials).length > 0;
 
@@ -2517,25 +2534,23 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                           </div>
                         )}
 
-                        {availableMats.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setExpandedCompId(isExpanded ? null : comp.id)}
-                            className={`px-2 py-1 rounded-lg text-[11px] font-bold border ${
-                              hasCustom
-                                ? 'bg-indigo-600 text-white border-indigo-600'
-                                : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
-                            }`}
-                          >
-                            {hasCustom ? 'Materiali Personalizzati' : 'Dettaglio Materiali'}
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => setExpandedCompId(isExpanded ? null : comp.id)}
+                          className={`px-2 py-1 rounded-lg text-[11px] font-bold border ${
+                            hasCustom
+                              ? 'bg-indigo-600 text-white border-indigo-600'
+                              : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+                          }`}
+                        >
+                          {hasCustom ? 'Materiali Personalizzati' : 'Dettaglio Materiali'}
+                        </button>
                       </div>
                     )}
                   </div>
 
-                  {cfg.enabled && isExpanded && availableMats.length > 0 && (
-                    <div className="bg-white p-2.5 rounded-lg border border-indigo-100 space-y-2">
+                  {cfg.enabled && isExpanded && (
+                    <div className="bg-white p-2.5 rounded-lg border border-indigo-100 space-y-2.5">
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] font-bold text-slate-600">
                           Quantità esatte in possesso del cliente:
@@ -2555,8 +2570,9 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                           </button>
                         )}
                       </div>
+
                       <div className="grid grid-cols-2 gap-2">
-                        {availableMats.map((mName) => {
+                        {allMats.map((mName) => {
                           const currentVal =
                             cfg.customMaterials && cfg.customMaterials[mName] !== undefined
                               ? cfg.customMaterials[mName]
@@ -2581,6 +2597,31 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                             </div>
                           );
                         })}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                        <input
+                          type="text"
+                          placeholder="Aggiungi altro materiale (es. Tirelle)..."
+                          value={newMatInput[comp.id] || ''}
+                          onChange={(e) =>
+                            setNewMatInput({ ...newMatInput, [comp.id]: e.target.value })
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddCustomMaterialName(comp.id);
+                            }
+                          }}
+                          className="flex-1 px-2 py-1 text-[11px] border border-slate-200 rounded bg-slate-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleAddCustomMaterialName(comp.id)}
+                          className="px-2.5 py-1 bg-slate-800 text-white text-[11px] font-bold rounded"
+                        >
+                          + Voce
+                        </button>
                       </div>
                     </div>
                   )}
@@ -2673,7 +2714,6 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     </div>
   );
 }
-
 function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, setDeliveries }) {
   const [companyName, setCompanyName] = useState('');
   const [companyCode, setCompanyCode] = useState('');
