@@ -1002,7 +1002,6 @@ const agentClients = useMemo(() => {
                         dateIso
                       )}
                   />
-                )
               })}
             </div>
           )}
