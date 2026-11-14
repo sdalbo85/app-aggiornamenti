@@ -1002,6 +1002,7 @@ function ClientDeliveryRow({
     currentUpdate && Array.isArray(currentUpdate.contentItems) && currentUpdate.contentItems.length > 0;
 
   useEffect(() => {
+    if (showDetails) return;
     const baseQty = delivery ? delivery.quantity || defaultTargetQty : defaultTargetQty;
     setQuantity(baseQty);
     setNotes(delivery ? delivery.notes || '' : '');
@@ -1026,7 +1027,7 @@ function ClientDeliveryRow({
     } else {
       setMaterialsState([]);
     }
-  }, [delivery, defaultTargetQty, currentUpdate, hasContentItems]);
+  }, [delivery, defaultTargetQty, currentUpdate, hasContentItems, showDetails]);
 
   const handleKitQuantityChange = (newKitQty) => {
     const safeKit = Math.max(1, newKitQty);
@@ -1068,7 +1069,15 @@ function ClientDeliveryRow({
       isoDate
     );
     setSavedBadge(true);
-    setTimeout(() => setSavedBadge(false), 2000);
+    setTimeout(() => {
+      setSavedBadge(false);
+      setShowDetails(false);
+    }, 800);
+  };
+
+  const handleCancelDelivery = () => {
+    onToggle();
+    setShowDetails(false);
   };
 
   const isDelivered = !!delivery;
@@ -1077,17 +1086,20 @@ function ClientDeliveryRow({
     <div className="py-3.5 space-y-3">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div className="flex items-start space-x-3 min-w-0">
-          <button
-            type="button"
-            onClick={onToggle}
+          <div
+            title={
+              isDelivered
+                ? 'Consegna confermata'
+                : 'Apri Dettagli / Materiali e clicca Conferma & Salva'
+            }
             className={`mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center border flex-shrink-0 ${
               isDelivered
-                ? 'bg-emerald-500 border-emerald-500 text-white'
-                : 'border-slate-300 bg-white'
+                ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm'
+                : 'border-slate-300 bg-slate-100 text-slate-300'
             }`}
           >
-            {isDelivered && <Check className="w-4 h-4 stroke-[3]" />}
-          </button>
+            <Check className="w-4 h-4 stroke-[3]" />
+          </div>
 
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -1249,7 +1261,16 @@ function ClientDeliveryRow({
               )}
             </div>
 
-            <div className="flex items-center space-x-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {isDelivered && (
+                <button
+                  type="button"
+                  onClick={handleCancelDelivery}
+                  className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-bold rounded-xl text-xs"
+                >
+                  Annulla Consegna
+                </button>
+              )}
               {savedBadge && <span className="text-emerald-600 font-bold text-xs">Salvato!</span>}
               <button
                 type="button"
