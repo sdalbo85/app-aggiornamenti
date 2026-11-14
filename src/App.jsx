@@ -2469,6 +2469,9 @@ function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveri
 function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, setDeliveries }) {
   const [companyName, setCompanyName] = useState('');
   const [companyCode, setCompanyCode] = useState('');
+  const [editingCompanyId, setEditingCompanyId] = useState(null);
+
+  const [editingUpdateId, setEditingUpdateId] = useState(null);
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
   const [updateTitle, setUpdateTitle] = useState('');
   const [updateYear, setUpdateYear] = useState(String(new Date().getFullYear()));
@@ -2479,14 +2482,29 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
   const handleSaveCompany = (e) => {
     e.preventDefault();
     if (!companyName.trim()) return;
-    setCompanies((prev) => [
-      ...prev,
-      {
-        id: 'comp_' + Date.now(),
-        name: companyName.trim(),
-        code: companyCode.trim() || companyName.substring(0, 3).toUpperCase()
-      }
-    ]);
+    if (editingCompanyId) {
+      setCompanies((prev) =>
+        prev.map((c) =>
+          c.id === editingCompanyId
+            ? {
+                ...c,
+                name: companyName.trim(),
+                code: companyCode.trim() || companyName.substring(0, 3).toUpperCase()
+              }
+            : c
+        )
+      );
+      setEditingCompanyId(null);
+    } else {
+      setCompanies((prev) => [
+        ...prev,
+        {
+          id: 'comp_' + Date.now(),
+          name: companyName.trim(),
+          code: companyCode.trim() || companyName.substring(0, 3).toUpperCase()
+        }
+      ]);
+    }
     setCompanyName('');
     setCompanyCode('');
   };
@@ -2495,8 +2513,21 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
     if (!newItemName.trim()) return;
     setContentItems((prev) => [
       ...prev,
-      { id: 'item_' + Date.now(), name: newItemName.trim(), qty: Math.max(1, parseInt(newItemQty, 10) || 1) }
+      {
+        id: 'item_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
+        name: newItemName.trim(),
+        qty: Math.max(1, parseInt(newItemQty, 10) || 1)
+      }
     ]);
+    setNewItemName('');
+    setNewItemQty(1);
+  };
+
+  const resetUpdateForm = () => {
+    setEditingUpdateId(null);
+    setUpdateTitle('');
+    setUpdateYear(String(new Date().getFullYear()));
+    setContentItems([{ id: 'item_' + Date.now(), name: 'Catalogo', qty: 1 }]);
     setNewItemName('');
     setNewItemQty(1);
   };
@@ -2505,25 +2536,66 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
     e.preventDefault();
     const compId = selectedCompanyId || (companies[0] && companies[0].id);
     if (!updateTitle.trim() || !compId) return;
-    setUpdates((prev) => [
-      ...prev,
-      {
-        id: 'upd_' + Date.now(),
-        companyId: compId,
-        title: updateTitle.trim(),
-        year: String(updateYear || new Date().getFullYear()),
-        contentItems: [...contentItems],
-        createdAt: new Date().toISOString()
-      }
-    ]);
-    setUpdateTitle('');
-    setContentItems([{ id: 'item_' + Date.now(), name: 'Catalogo', qty: 1 }]);
+
+    if (editingUpdateId) {
+      setUpdates((prev) =>
+        prev.map((u) =>
+          u.id === editingUpdateId
+            ? {
+                ...u,
+                companyId: compId,
+                title: updateTitle.trim(),
+                year: String(updateYear || new Date().getFullYear()),
+                contentItems: [...contentItems]
+              }
+            : u
+        )
+      );
+    } else {
+      setUpdates((prev) => [
+        ...prev,
+        {
+          id: 'upd_' + Date.now(),
+          companyId: compId,
+          title: updateTitle.trim(),
+          year: String(updateYear || new Date().getFullYear()),
+          contentItems: [...contentItems],
+          createdAt: new Date().toISOString()
+        }
+      ]);
+    }
+    resetUpdateForm();
+  };
+
+  const handleEditUpdate = (upd) => {
+    setEditingUpdateId(upd.id);
+    setSelectedCompanyId(upd.companyId);
+    setUpdateTitle(upd.title);
+    setUpdateYear(String(upd.year || new Date().getFullYear()));
+    setContentItems(Array.isArray(upd.contentItems) ? [...upd.contentItems] : []);
   };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
       <div className="lg:col-span-5 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-        <h3 className="font-bold text-sm">1. Aziende Mandanti</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-sm">
+            {editingCompanyId ? 'Modifica Azienda Mandante' : '1. Aziende Mandanti'}
+          </h3>
+          {editingCompanyId && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingCompanyId(null);
+                setCompanyName('');
+                setCompanyCode('');
+              }}
+              className="text-xs text-slate-400 underline"
+            >
+              Annulla
+            </button>
+          )}
+        </div>
         <form onSubmit={handleSaveCompany} className="space-y-2.5">
           <input
             type="text"
@@ -2541,29 +2613,61 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
             className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
           />
           <button type="submit" className="w-full py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
-            + Aggiungi Azienda
+            {editingCompanyId ? 'Salva Modifica Azienda' : '+ Aggiungi Azienda'}
           </button>
         </form>
         <div className="divide-y divide-slate-100">
           {companies.map((comp) => (
             <div key={comp.id} className="py-2.5 flex justify-between items-center text-sm font-bold">
               <span>{comp.name}</span>
-              <button
-                onClick={() => {
-                  setCompanies((prev) => prev.filter((c) => c.id !== comp.id));
-                  setUpdates((prev) => prev.filter((u) => u.companyId !== comp.id));
-                }}
-                className="p-1.5 text-rose-500"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              <div className="flex items-center space-x-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingCompanyId(comp.id);
+                    setCompanyName(comp.name);
+                    setCompanyCode(comp.code || '');
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg"
+                  title="Modifica azienda"
+                >
+                  <Edit3 className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompanies((prev) => prev.filter((c) => c.id !== comp.id));
+                    setUpdates((prev) => prev.filter((u) => u.companyId !== comp.id));
+                  }}
+                  className="p-1.5 text-rose-500 rounded-lg"
+                  title="Elimina azienda"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           ))}
         </div>
       </div>
 
       <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-        <h3 className="font-bold text-sm">2. Pubblica Aggiornamento / Catalogo</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-sm">
+            {editingUpdateId
+              ? 'Modifica Aggiornamento & Distinta Materiali'
+              : '2. Pubblica Aggiornamento / Catalogo'}
+          </h3>
+          {editingUpdateId && (
+            <button
+              type="button"
+              onClick={resetUpdateForm}
+              className="text-xs text-slate-500 hover:text-slate-800 underline"
+            >
+              Annulla Modifica
+            </button>
+          )}
+        </div>
+
         <form onSubmit={handleSaveUpdate} className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
             <select
@@ -2618,6 +2722,12 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
                 placeholder="Materiale (es. Listino)"
                 value={newItemName}
                 onChange={(e) => setNewItemName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddContentItem();
+                  }
+                }}
                 className="flex-1 p-2 text-xs bg-white border rounded-xl"
               />
               <input
@@ -2638,7 +2748,7 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
           </div>
 
           <button type="submit" className="w-full py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
-            + Pubblica Aggiornamento
+            {editingUpdateId ? 'Salva Modifiche Aggiornamento' : '+ Pubblica Aggiornamento'}
           </button>
         </form>
 
@@ -2646,19 +2756,63 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
           {updates.map((upd) => {
             const comp = companies.find((c) => c.id === upd.companyId);
             return (
-              <div key={upd.id} className="py-2.5 flex justify-between items-center text-xs">
-                <div>
-                  <strong>{upd.title}</strong> ({comp?.name} - {upd.year})
+              <div
+                key={upd.id}
+                className={`py-3 flex items-start justify-between gap-2 ${
+                  editingUpdateId === upd.id ? 'bg-indigo-50/60 px-2 rounded-xl' : ''
+                }`}
+              >
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                    <strong className="text-sm text-slate-900">{upd.title}</strong>
+                    <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">
+                      {comp?.name || 'N.D.'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">
+                      {upd.year}
+                    </span>
+                  </div>
+
+                  {Array.isArray(upd.contentItems) && upd.contentItems.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {upd.contentItems.map((it) => (
+                        <span
+                          key={it.id}
+                          className="text-[11px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-semibold border border-indigo-100"
+                        >
+                          {it.qty}x {it.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-slate-400 italic">
+                      Nessun materiale specificato nella distinta
+                    </div>
+                  )}
                 </div>
-                <button
-                  onClick={() => {
-                    setUpdates((prev) => prev.filter((u) => u.id !== upd.id));
-                    setDeliveries((prev) => prev.filter((d) => d.updateId !== upd.id));
-                  }}
-                  className="p-1.5 text-rose-500"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+
+                <div className="flex items-center space-x-1 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleEditUpdate(upd)}
+                    className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg"
+                    title="Modifica aggiornamento e materiali"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (editingUpdateId === upd.id) resetUpdateForm();
+                      setUpdates((prev) => prev.filter((u) => u.id !== upd.id));
+                      setDeliveries((prev) => prev.filter((d) => d.updateId !== upd.id));
+                    }}
+                    className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
+                    title="Elimina aggiornamento"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             );
           })}
