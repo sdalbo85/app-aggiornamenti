@@ -1050,7 +1050,9 @@ function ClientDeliveryRow({
   const hasMaterialDiff = materialsState.some(
     (m) => m.deliveredQty !== m.unitQty * defaultTargetQty
   );
+  const hasNotes = notes.trim().length > 0;
   const isQtyDifferentFromExpected = quantity !== defaultTargetQty || hasMaterialDiff;
+  const autoAlertRequired = isQtyDifferentFromExpected || hasNotes;
 
   const handleSave = () => {
     const isoDate = customDateLocal
@@ -1065,7 +1067,7 @@ function ClientDeliveryRow({
         deliveredQty: m.deliveredQty
       })),
       notes,
-      alert || isQtyDifferentFromExpected,
+      alert || autoAlertRequired,
       isoDate
     );
     setSavedBadge(true);
@@ -1247,16 +1249,16 @@ function ClientDeliveryRow({
               <label className="flex items-center space-x-2 cursor-pointer text-amber-700 font-semibold">
                 <input
                   type="checkbox"
-                  checked={alert || isQtyDifferentFromExpected}
-                  disabled={isQtyDifferentFromExpected}
+                  checked={alert || autoAlertRequired}
+                  disabled={autoAlertRequired}
                   onChange={(e) => setAlert(e.target.checked)}
                   className="rounded border-amber-300 text-amber-600"
                 />
                 <span>Segnala Alert a Sede</span>
               </label>
-              {isQtyDifferentFromExpected && (
+              {autoAlertRequired && (
                 <p className="text-[11px] text-indigo-700 font-semibold mt-0.5">
-                  Alert automatico attivo per variazione quantità (verrà notificato alla Sede).
+                  Alert automatico attivo (verrà notificato alla Sede al salvataggio).
                 </p>
               )}
             </div>
