@@ -282,16 +282,22 @@ export default function App() {
     return { success: false, error: 'Email o password non corretti. Riprova.' };
   };
 
-  const buildDefaultDeliveredMaterials = (updateObj, kitQuantity) => {
+  const buildDefaultDeliveredMaterials = (updateObj, kitQuantity, customMatMap = null) => {
     if (!updateObj || !Array.isArray(updateObj.contentItems) || updateObj.contentItems.length === 0) {
       return [];
     }
-    return updateObj.contentItems.map((item) => ({
-      id: item.id,
-      name: item.name,
-      unitQty: Number(item.qty) || 1,
-      deliveredQty: (Number(item.qty) || 1) * Math.max(1, Number(kitQuantity) || 1)
-    }));
+    return updateObj.contentItems.map((item) => {
+      const unitQty = Number(item.qty) || 1;
+      const customVal = customMatMap && customMatMap[item.name] !== undefined
+        ? Number(customMatMap[item.name])
+        : null;
+      return {
+        id: item.id,
+        name: item.name,
+        unitQty,
+        deliveredQty: customVal !== null ? customVal : unitQty * Math.max(1, Number(kitQuantity) || 1)
+      };
+    });
   };
 
   const applyDeliveryToWarehouse = (companyId, updateObj, materialsList, kitQty, direction = -1) => {
@@ -950,11 +956,34 @@ const agentClients = useMemo(() => {
                 const delivery = deliveries.find(
                   (d) => d.clientId === client.id && d.updateId === currentUpdate.id && d.delivered
                 );
-                const defaultTargetQty = client.companyConfigs?.[activeCompanyId]?.quantity
-                  ? Math.max(1, Number(client.companyConfigs[activeCompanyId].quantity) || 1)
+                const compCfg = client.companyConfigs?.[activeCompanyId] || {};
+                const defaultTargetQty = compCfg.quantity
+                  ? Math.max(1, Number(compCfg.quantity) || 1)
                   : 1;
+                const customMaterialsConfig = compCfg.customMaterials || null;
 
                 return (
+                  <ClientDeliveryRow
+                    key={client.id}
+                    client={client}
+                    currentUpdate={currentUpdate}
+                    delivery={delivery}
+                    defaultTargetQty={defaultTargetQty}
+                    customMaterialsConfig={customMaterialsConfig}
+                    onToggle={() => onToggleDelivery(client.id, currentUpdate.id, defaultTargetQty)}
+                    onSaveDetails={(qty, deliveredMaterials, notes, alert, dateIso) =>
+                      onUpdateDeliveryDetails(
+                        client.id,
+                        currentUpdate.id,
+                        qty,
+                        deliveredMaterials,
+                        notes,
+                        alert,
+                        dateIso
+                      )
+                    }
+                  />
+                );
                   <ClientDeliveryRow
                     key={client.id}
                     client={client}
@@ -989,6 +1018,7 @@ function ClientDeliveryRow({
   currentUpdate,
   delivery,
   defaultTargetQty,
+  customMaterialsConfig,
   onToggle,
   onSaveDetails
 }) {
@@ -1018,23 +1048,28 @@ function ClientDeliveryRow({
             (m) => m.id === item.id || m.name === item.name
           );
           const unitQty = Number(item.qty) || 1;
+          const expectedForClient =
+            customMaterialsConfig && customMaterialsConfig[item.name] !== undefined
+              ? Number(customMaterialsConfig[item.name])
+              : unitQty * baseQty;
           return {
             id: item.id,
             name: item.name,
             unitQty,
-            deliveredQty: existingMat ? Number(existingMat.deliveredQty) : unitQty * baseQty
+            expectedQty: expectedForClient,
+            deliveredQty: existingMat ? Number(existingMat.deliveredQty) : expectedForClient
           };
         })
       );
     } else {
       setMaterialsState([]);
     }
-  }, [delivery, defaultTargetQty, currentUpdate, hasContentItems, showDetails]);
+  }, [delivery, defaultTargetQty, customMaterialsConfig, currentUpdate, hasContentItems, showDetails]);
 
   const handleKitQuantityChange = (newKitQty) => {
     const safeKit = Math.max(1, newKitQty);
     setQuantity(safeKit);
-    if (hasContentItems) {
+    if (hasContentItems && !customMaterialsConfig) {
       setMaterialsState((prev) =>
         prev.map((m) => ({ ...m, deliveredQty: m.unitQty * safeKit }))
       );
@@ -1050,10 +1085,11 @@ function ClientDeliveryRow({
   };
 
   const hasMaterialDiff = materialsState.some(
-    (m) => m.deliveredQty !== m.unitQty * defaultTargetQty
+    (m) => m.deliveredQty !== (m.expectedQty !== undefined ? m.expectedQty : m.unitQty * defaultTargetQty)
   );
   const hasNotes = notes.trim().length > 0;
-  const isQtyDifferentFromExpected = quantity !== defaultTargetQty || hasMaterialDiff;
+  const isQtyDifferentFromExpected =
+    (!customMaterialsConfig && quantity !== defaultTargetQty) || hasMaterialDiff;
   const autoAlertRequired = isQtyDifferentFromExpected || hasNotes;
 
   const handleSave = () => {
@@ -2258,15 +2294,33 @@ function AlertsTab({ agents, companies, updates, clients, setClients, deliveries
   );
 }
 
-function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveries }) {
+function ClientsManagerTab({ agents, companies, updates, clients, setClients, setDeliveries }) {
   const [editingClientId, setEditingClientId] = useState(null);
   const [name, setName] = useState('');
   const [province, setProvince] = useState('');
   const [agentId, setAgentId] = useState('');
   const [companyConfigs, setCompanyConfigs] = useState({});
+  const [expandedCompId, setExpandedCompId] = useState(null);
   const [searchFilter, setSearchFilter] = useState('');
 
   const fieldAgents = agents.filter((a) => a.role === 'agent');
+
+  // Ricava tutti i nomi dei materiali esistenti per ciascuna azienda dai suoi cataloghi
+  const companyMaterialsMap = useMemo(() => {
+    const map = {};
+    companies.forEach((comp) => {
+      const namesSet = new Set();
+      updates
+        .filter((u) => u.companyId === comp.id)
+        .forEach((u) => {
+          (u.contentItems || []).forEach((it) => {
+            if (it.name) namesSet.add(it.name);
+          });
+        });
+      map[comp.id] = Array.from(namesSet);
+    });
+    return map;
+  }, [companies, updates]);
 
   const handleSaveClient = (e) => {
     e.preventDefault();
@@ -2306,6 +2360,7 @@ function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveri
     setProvince('');
     setAgentId('');
     setCompanyConfigs({});
+    setExpandedCompId(null);
   };
 
   const handleEditClient = (cl) => {
@@ -2315,9 +2370,30 @@ function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveri
     setAgentId(cl.agentId || '');
     const restored = {};
     (cl.companyIds || []).forEach((id) => {
-      restored[id] = { enabled: true, quantity: cl.companyConfigs?.[id]?.quantity || 1 };
+      restored[id] = {
+        enabled: true,
+        quantity: cl.companyConfigs?.[id]?.quantity || 1,
+        customMaterials: cl.companyConfigs?.[id]?.customMaterials || null
+      };
     });
     setCompanyConfigs(restored);
+    setExpandedCompId(null);
+  };
+
+  const handleCustomMatQtyChange = (compId, matName, val) => {
+    const curr = companyConfigs[compId] || { enabled: true, quantity: 1 };
+    const prevCustom = curr.customMaterials || {};
+    const parsed = Math.max(0, parseInt(val, 10) || 0);
+    setCompanyConfigs({
+      ...companyConfigs,
+      [compId]: {
+        ...curr,
+        customMaterials: {
+          ...prevCustom,
+          [matName]: parsed
+        }
+      }
+    });
   };
 
   const filteredClients = clients
@@ -2332,7 +2408,28 @@ function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveri
   return (
     <div className="space-y-6">
       <form onSubmit={handleSaveClient} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-        <h3 className="font-bold text-sm">{editingClientId ? 'Modifica Cliente' : 'Nuovo Cliente'}</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-sm">
+            {editingClientId ? 'Modifica Cliente e Dotazione Materiali' : 'Nuovo Cliente'}
+          </h3>
+          {editingClientId && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingClientId(null);
+                setName('');
+                setProvince('');
+                setAgentId('');
+                setCompanyConfigs({});
+                setExpandedCompId(null);
+              }}
+              className="text-xs text-slate-400 underline"
+            >
+              Annulla Modifica
+            </button>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <input
             type="text"
@@ -2365,45 +2462,137 @@ function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveri
           </select>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-          {companies.map((comp) => {
-            const cfg = companyConfigs[comp.id] || { enabled: false, quantity: 1 };
-            return (
-              <div key={comp.id} className="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 text-xs">
-                <label className="flex items-center space-x-2 font-bold">
-                  <input
-                    type="checkbox"
-                    checked={cfg.enabled}
-                    onChange={() =>
-                      setCompanyConfigs({
-                        ...companyConfigs,
-                        [comp.id]: { ...cfg, enabled: !cfg.enabled }
-                      })
-                    }
-                  />
-                  <span>{comp.name}</span>
-                </label>
-                {cfg.enabled && (
-                  <input
-                    type="number"
-                    min="1"
-                    value={cfg.quantity}
-                    onChange={(e) =>
-                      setCompanyConfigs({
-                        ...companyConfigs,
-                        [comp.id]: { ...cfg, quantity: Math.max(1, parseInt(e.target.value, 10) || 1) }
-                      })
-                    }
-                    className="w-12 p-1 border rounded text-center font-bold"
-                  />
-                )}
-              </div>
-            );
-          })}
+        <div className="space-y-2">
+          <div className="text-xs font-bold text-slate-500 uppercase">
+            Aziende Trattate & Materiale in Dotazione al Cliente:
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {companies.map((comp) => {
+              const cfg = companyConfigs[comp.id] || { enabled: false, quantity: 1, customMaterials: null };
+              const availableMats = companyMaterialsMap[comp.id] || [];
+              const isExpanded = expandedCompId === comp.id;
+              const hasCustom = cfg.customMaterials && Object.keys(cfg.customMaterials).length > 0;
+
+              return (
+                <div
+                  key={comp.id}
+                  className={`p-3 rounded-xl border text-xs space-y-2.5 transition-all ${
+                    cfg.enabled ? 'bg-indigo-50/40 border-indigo-200' : 'border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="flex items-center space-x-2 font-bold text-slate-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={cfg.enabled}
+                        onChange={() =>
+                          setCompanyConfigs({
+                            ...companyConfigs,
+                            [comp.id]: { ...cfg, enabled: !cfg.enabled }
+                          })
+                        }
+                      />
+                      <span>{comp.name}</span>
+                    </label>
+
+                    {cfg.enabled && (
+                      <div className="flex items-center space-x-2">
+                        {!hasCustom && (
+                          <div className="flex items-center space-x-1">
+                            <span className="text-[11px] text-slate-500">Kit:</span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={cfg.quantity}
+                              onChange={(e) =>
+                                setCompanyConfigs({
+                                  ...companyConfigs,
+                                  [comp.id]: {
+                                    ...cfg,
+                                    quantity: Math.max(1, parseInt(e.target.value, 10) || 1)
+                                  }
+                                })
+                              }
+                              className="w-12 p-1 border border-slate-300 rounded text-center font-bold bg-white"
+                            />
+                          </div>
+                        )}
+
+                        {availableMats.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setExpandedCompId(isExpanded ? null : comp.id)}
+                            className={`px-2 py-1 rounded-lg text-[11px] font-bold border ${
+                              hasCustom
+                                ? 'bg-indigo-600 text-white border-indigo-600'
+                                : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+                            }`}
+                          >
+                            {hasCustom ? 'Materiali Personalizzati' : 'Dettaglio Materiali'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {cfg.enabled && isExpanded && availableMats.length > 0 && (
+                    <div className="bg-white p-2.5 rounded-lg border border-indigo-100 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-600">
+                          Quantità esatte in possesso del cliente:
+                        </span>
+                        {hasCustom && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCompanyConfigs({
+                                ...companyConfigs,
+                                [comp.id]: { ...cfg, customMaterials: null }
+                              })
+                            }
+                            className="text-[10px] text-rose-500 underline"
+                          >
+                            Ripristina kit standard
+                          </button>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {availableMats.map((mName) => {
+                          const currentVal =
+                            cfg.customMaterials && cfg.customMaterials[mName] !== undefined
+                              ? cfg.customMaterials[mName]
+                              : cfg.quantity || 1;
+                          return (
+                            <div
+                              key={mName}
+                              className="flex items-center justify-between bg-slate-50 px-2 py-1.5 rounded border border-slate-200"
+                            >
+                              <span className="font-semibold text-slate-700 truncate pr-1">
+                                {mName}
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={currentVal}
+                                onChange={(e) =>
+                                  handleCustomMatQtyChange(comp.id, mName, e.target.value)
+                                }
+                                className="w-12 p-1 border border-slate-300 rounded text-center font-bold bg-white"
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <button type="submit" className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
-          {editingClientId ? 'Salva Modifiche' : '+ Salva Cliente'}
+          {editingClientId ? 'Salva Modifiche Cliente' : '+ Salva Cliente'}
         </button>
       </form>
 
@@ -2424,7 +2613,7 @@ function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveri
               <th className="p-3">Cliente</th>
               <th className="p-3">Prov</th>
               <th className="p-3">Agente</th>
-              <th className="p-3">Aziende & Spettanze</th>
+              <th className="p-3">Aziende & Dotazione Materiale</th>
               <th className="p-3 text-right">Azioni</th>
             </tr>
           </thead>
@@ -2437,14 +2626,30 @@ function ClientsManagerTab({ agents, companies, clients, setClients, setDeliveri
                   <td className="p-3">{c.province}</td>
                   <td className="p-3 text-indigo-600 font-medium">{ag ? ag.name : '-'}</td>
                   <td className="p-3">
-                    {(c.companyIds || []).map((id) => {
-                      const comp = companies.find((co) => co.id === id);
-                      return comp ? (
-                        <span key={id} className="mr-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold">
-                          {comp.name}: {c.companyConfigs?.[id]?.quantity || 1} pz
-                        </span>
-                      ) : null;
-                    })}
+                    <div className="flex flex-wrap gap-1.5">
+                      {(c.companyIds || []).map((id) => {
+                        const comp = companies.find((co) => co.id === id);
+                        if (!comp) return null;
+                        const cfg = c.companyConfigs?.[id] || {};
+                        const custom = cfg.customMaterials;
+                        const label =
+                          custom && Object.keys(custom).length > 0
+                            ? Object.entries(custom)
+                                .filter(([, q]) => Number(q) > 0)
+                                .map(([mName, q]) => `${q}x ${mName}`)
+                                .join(', ')
+                            : `${cfg.quantity || 1} kit`;
+
+                        return (
+                          <span
+                            key={id}
+                            className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold border border-indigo-100"
+                          >
+                            {comp.name}: {label}
+                          </span>
+                        );
+                      })}
+                    </div>
                   </td>
                   <td className="p-3 text-right space-x-1">
                     <button onClick={() => handleEditClient(c)} className="p-1.5 text-slate-500 hover:text-indigo-600">
