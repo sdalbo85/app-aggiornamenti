@@ -1660,7 +1660,7 @@ function DashboardTab({
               lowStockCount > 0 ? 'text-rose-600' : 'text-indigo-500'
             }`}
           >
-            Scorte Magazzino < 5 pz
+            Scorte Magazzino sotto 5 pz
           </div>
           <div
             className={`text-2xl font-black mt-1 ${
@@ -2934,7 +2934,7 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
         comp ? comp.name : 'Generico / Varie',
         item.name,
         qty,
-        qty < 5 ? 'SCORTA BASSA (< 5 pz) - DA INTEGRARE' : 'Disponibile',
+        qty < 5 ? 'SCORTA BASSA (sotto 5 pz) - DA INTEGRARE' : 'Disponibile',
         item.notes || '',
         item.updatedAt ? formatDisplayDate(item.updatedAt) : ''
       ];
@@ -3113,7 +3113,7 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
                 onChange={(e) => setOnlyLowStock(e.target.checked)}
                 className="rounded border-rose-300 text-rose-600"
               />
-              <span>Solo < 5 pz</span>
+              <span>Solo sotto 5 pz</span>
             </label>
 
             <button
@@ -3222,7 +3222,7 @@ function WarehouseManagerTab({ companies, updates, warehouseItems, setWarehouseI
                         {isLowStock ? (
                           <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-100 text-rose-700 border border-rose-300">
                             <AlertTriangle className="w-3.5 h-3.5 mr-1 text-rose-600" />
-                            Scorta bassa (< 5 pz)
+                            Scorta bassa (sotto 5 pz)
                           </span>
                         ) : (
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
