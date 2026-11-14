@@ -1000,8 +1000,7 @@ const agentClients = useMemo(() => {
                         notes,
                         alert,
                         dateIso
-                      )
-                    }
+                      )}
                   />
                 );
               })}
