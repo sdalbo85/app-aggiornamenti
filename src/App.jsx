@@ -2301,9 +2301,25 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
   const [companyConfigs, setCompanyConfigs] = useState({});
   const [expandedCompId, setExpandedCompId] = useState(null);
   const [newMatInput, setNewMatInput] = useState({});
+
+  // Filtri tabella clienti
   const [searchFilter, setSearchFilter] = useState('');
+  const [provinceFilter, setProvinceFilter] = useState('');
+  const [agentFilter, setAgentFilter] = useState('');
+  const [companyFilter, setCompanyFilter] = useState('');
 
   const fieldAgents = agents.filter((a) => a.role === 'agent');
+
+  // Elenco ordinato delle province presenti nei clienti
+  const availableProvinces = useMemo(() => {
+    const set = new Set();
+    clients.forEach((c) => {
+      if (c.province && c.province.trim()) {
+        set.add(c.province.trim().toUpperCase());
+      }
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'it'));
+  }, [clients]);
 
   // Ricava i materiali dai cataloghi dell'azienda, con voci base di default se non ci sono ancora aggiornamenti
   const companyMaterialsMap = useMemo(() => {
@@ -2409,13 +2425,33 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
   };
 
   const filteredClients = clients
-    .filter(
-      (c) =>
+    .filter((c) => {
+      const matchName =
         !searchFilter.trim() ||
-        c.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
-        (c.province && c.province.toLowerCase().includes(searchFilter.toLowerCase()))
-    )
+        (c.name || '').toLowerCase().includes(searchFilter.trim().toLowerCase());
+      const matchProvince =
+        !provinceFilter ||
+        (c.province || '').trim().toUpperCase() === provinceFilter;
+      const matchAgent =
+        !agentFilter || c.agentId === agentFilter;
+      const matchCompany =
+        !companyFilter ||
+        (Array.isArray(c.companyIds) && c.companyIds.includes(companyFilter));
+
+      return matchName && matchProvince && matchAgent && matchCompany;
+    })
     .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'it', { sensitivity: 'base' }));
+
+  const hasActiveFilters = Boolean(
+    searchFilter.trim() || provinceFilter || agentFilter || companyFilter
+  );
+
+  const resetFilters = () => {
+    setSearchFilter('');
+    setProvinceFilter('');
+    setAgentFilter('');
+    setCompanyFilter('');
+  };
 
   return (
     <div className="space-y-6">
@@ -2637,16 +2673,69 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
       </form>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
-        <div className="p-4 border-b border-slate-100 flex justify-between items-center">
-          <span className="font-bold text-sm">Clienti ({filteredClients.length})</span>
-          <input
-            type="text"
-            placeholder="Cerca..."
-            value={searchFilter}
-            onChange={(e) => setSearchFilter(e.target.value)}
-            className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg"
-          />
+        <div className="p-4 border-b border-slate-100 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-sm">
+              Clienti ({filteredClients.length}{hasActiveFilters ? ` su ${clients.length}` : ''})
+            </span>
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="text-xs text-rose-600 font-bold hover:underline"
+              >
+                Azzera filtri
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <input
+              type="text"
+              placeholder="Cerca per cliente..."
+              value={searchFilter}
+              onChange={(e) => setSearchFilter(e.target.value)}
+              className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl"
+            />
+            <select
+              value={provinceFilter}
+              onChange={(e) => setProvinceFilter(e.target.value)}
+              className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl"
+            >
+              <option value="">Tutte le province</option>
+              {availableProvinces.map((prov) => (
+                <option key={prov} value={prov}>
+                  Provincia: {prov}
+                </option>
+              ))}
+            </select>
+            <select
+              value={agentFilter}
+              onChange={(e) => setAgentFilter(e.target.value)}
+              className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl"
+            >
+              <option value="">Tutti gli agenti</option>
+              {fieldAgents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  Agente: {a.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={companyFilter}
+              onChange={(e) => setCompanyFilter(e.target.value)}
+              className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl"
+            >
+              <option value="">Tutte le aziende</option>
+              {companies.map((comp) => (
+                <option key={comp.id} value={comp.id}>
+                  Azienda: {comp.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
+
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase">
             <tr>
@@ -2658,56 +2747,64 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {filteredClients.map((c) => {
-              const ag = agents.find((a) => a.id === c.agentId);
-              return (
-                <tr key={c.id}>
-                  <td className="p-3 font-bold">{c.name}</td>
-                  <td className="p-3">{c.province}</td>
-                  <td className="p-3 text-indigo-600 font-medium">{ag ? ag.name : '-'}</td>
-                  <td className="p-3">
-                    <div className="flex flex-wrap gap-1.5">
-                      {(c.companyIds || []).map((id) => {
-                        const comp = companies.find((co) => co.id === id);
-                        if (!comp) return null;
-                        const cfg = c.companyConfigs?.[id] || {};
-                        const custom = cfg.customMaterials;
-                        const label =
-                          custom && Object.keys(custom).length > 0
-                            ? Object.entries(custom)
-                                .filter(([, q]) => Number(q) > 0)
-                                .map(([mName, q]) => `${q}x ${mName}`)
-                                .join(', ')
-                            : `${cfg.quantity || 1} kit`;
+            {filteredClients.length === 0 ? (
+              <tr>
+                <td colSpan="5" className="p-6 text-center text-slate-400">
+                  Nessun cliente corrisponde ai filtri selezionati.
+                </td>
+              </tr>
+            ) : (
+              filteredClients.map((c) => {
+                const ag = agents.find((a) => a.id === c.agentId);
+                return (
+                  <tr key={c.id}>
+                    <td className="p-3 font-bold">{c.name}</td>
+                    <td className="p-3">{c.province}</td>
+                    <td className="p-3 text-indigo-600 font-medium">{ag ? ag.name : '-'}</td>
+                    <td className="p-3">
+                      <div className="flex flex-wrap gap-1.5">
+                        {(c.companyIds || []).map((id) => {
+                          const comp = companies.find((co) => co.id === id);
+                          if (!comp) return null;
+                          const cfg = c.companyConfigs?.[id] || {};
+                          const custom = cfg.customMaterials;
+                          const label =
+                            custom && Object.keys(custom).length > 0
+                              ? Object.entries(custom)
+                                  .filter(([, q]) => Number(q) > 0)
+                                  .map(([mName, q]) => `${q}x ${mName}`)
+                                  .join(', ')
+                              : `${cfg.quantity || 1} kit`;
 
-                        return (
-                          <span
-                            key={id}
-                            className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold border border-indigo-100"
-                          >
-                            {comp.name}: {label}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </td>
-                  <td className="p-3 text-right space-x-1">
-                    <button onClick={() => handleEditClient(c)} className="p-1.5 text-slate-500 hover:text-indigo-600">
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        setClients((prev) => prev.filter((cl) => cl.id !== c.id));
-                        setDeliveries((prev) => prev.filter((d) => d.clientId !== c.id));
-                      }}
-                      className="p-1.5 text-rose-500"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
+                          return (
+                            <span
+                              key={id}
+                              className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold border border-indigo-100"
+                            >
+                              {comp.name}: {label}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </td>
+                    <td className="p-3 text-right space-x-1">
+                      <button onClick={() => handleEditClient(c)} className="p-1.5 text-slate-500 hover:text-indigo-600">
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setClients((prev) => prev.filter((cl) => cl.id !== c.id));
+                          setDeliveries((prev) => prev.filter((d) => d.clientId !== c.id));
+                        }}
+                        className="p-1.5 text-rose-500"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
           </tbody>
         </table>
       </div>
