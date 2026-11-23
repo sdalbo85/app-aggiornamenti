@@ -282,11 +282,27 @@ export default function App() {
     return { success: false, error: 'Email o password non corretti. Riprova.' };
   };
 
-  const buildDefaultDeliveredMaterials = (updateObj, kitQuantity, customMatMap = null) => {
+  const buildDefaultDeliveredMaterials = (updateObj, kitQuantity, customMatMap = null, clientObj = null) => {
     if (!updateObj || !Array.isArray(updateObj.contentItems) || updateObj.contentItems.length === 0) {
       return [];
     }
-    return updateObj.contentItems.map((item) => {
+    const compId = updateObj.companyId;
+    const compCfg = clientObj?.companyConfigs?.[compId];
+    const clientSupports = compCfg?.customMaterials || compCfg?.fixedSupports || null;
+
+    const applicableItems = updateObj.contentItems.filter((item) => {
+      const linked = item.linkedEquipment ? item.linkedEquipment.trim() : '';
+      if (!linked) return true;
+      if (!clientSupports || typeof clientSupports !== 'object') return false;
+      const matchKey = Object.keys(clientSupports).find(
+        (k) => k.trim().toLowerCase() === linked.toLowerCase()
+      );
+      if (!matchKey) return false;
+      const qty = Number(clientSupports[matchKey]);
+      return !isNaN(qty) && qty > 0;
+    });
+
+    return applicableItems.map((item) => {
       const unitQty = Number(item.qty) || 1;
       const customVal = customMatMap && customMatMap[item.name] !== undefined
         ? Number(customMatMap[item.name])
@@ -295,6 +311,7 @@ export default function App() {
         id: item.id,
         name: item.name,
         unitQty,
+        linkedEquipment: item.linkedEquipment || '',
         deliveredQty: customVal !== null ? customVal : unitQty * Math.max(1, Number(kitQuantity) || 1)
       };
     });
@@ -351,6 +368,7 @@ export default function App() {
       (d) => d.clientId === clientId && d.updateId === updateId
     );
     const updateObj = updates.find((u) => u.id === updateId);
+    const clientObj = clients.find((c) => c.id === clientId);
 
     if (existingIndex >= 0) {
       const existingRec = deliveries[existingIndex];
@@ -362,7 +380,7 @@ export default function App() {
     } else {
       const qty = Math.max(1, Number(defaultTargetQty) || 1);
       const compId = updateObj ? updateObj.companyId : activeCompanyId;
-      const mats = buildDefaultDeliveredMaterials(updateObj, qty);
+      const mats = buildDefaultDeliveredMaterials(updateObj, qty, null, clientObj);
       const newRecord = {
         id: 'del_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         clientId,
@@ -408,7 +426,7 @@ export default function App() {
     const finalMaterials =
       deliveredMaterials && deliveredMaterials.length > 0
         ? deliveredMaterials
-        : buildDefaultDeliveredMaterials(updateObj, safeQty);
+        : buildDefaultDeliveredMaterials(updateObj, safeQty, null, clientObj);
 
     const hasMaterialQtyDiff = finalMaterials.some(
       (m) => Number(m.deliveredQty) !== (Number(m.unitQty) || 1) * expectedQty
@@ -905,9 +923,14 @@ const agentClients = useMemo(() => {
                       {currentUpdate.contentItems.map((item) => (
                         <span
                           key={item.id}
-                          className="px-2.5 py-0.5 rounded-md text-xs font-semibold bg-white text-indigo-700 border border-indigo-200"
+                          className="px-2.5 py-0.5 rounded-md text-xs font-semibold bg-white text-indigo-700 border border-indigo-200 flex items-center gap-1"
                         >
-                          {item.qty}x {item.name}
+                          <span>{item.qty}x {item.name}</span>
+                          {item.linkedEquipment && (
+                            <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 px-1 py-0.2 rounded font-bold">
+                              🔗 {item.linkedEquipment}
+                            </span>
+                          )}
                         </span>
                       ))}
                     </div>
@@ -984,24 +1007,6 @@ const agentClients = useMemo(() => {
                     }
                   />
                 );
-                  <ClientDeliveryRow
-                    key={client.id}
-                    client={client}
-                    currentUpdate={currentUpdate}
-                    delivery={delivery}
-                    defaultTargetQty={defaultTargetQty}
-                    onToggle={() => onToggleDelivery(client.id, currentUpdate.id, defaultTargetQty)}
-                    onSaveDetails={(qty, deliveredMaterials, notes, alert, dateIso) =>
-                      onUpdateDeliveryDetails(
-                        client.id,
-                        currentUpdate.id,
-                        qty,
-                        deliveredMaterials,
-                        notes,
-                        alert,
-                        dateIso
-                      )}
-                  />
               })}
             </div>
           )}
@@ -1028,8 +1033,36 @@ function ClientDeliveryRow({
   const [customDateLocal, setCustomDateLocal] = useState('');
   const [savedBadge, setSavedBadge] = useState(false);
 
-  const hasContentItems =
-    currentUpdate && Array.isArray(currentUpdate.contentItems) && currentUpdate.contentItems.length > 0;
+  // Filtra i materiali dell'aggiornamento:
+  // Le righe vincolate a un supporto fisso (es. "Vetri") vengono nascoste/escluse
+  // se il cliente ha quantità 0 o non possiede quel supporto per l'azienda selezionata.
+  const applicableContentItems = useMemo(() => {
+    if (!currentUpdate || !Array.isArray(currentUpdate.contentItems)) return [];
+    const compId = currentUpdate.companyId;
+    const compCfg = client?.companyConfigs?.[compId];
+    const clientSupports = compCfg?.customMaterials || compCfg?.fixedSupports;
+
+    return currentUpdate.contentItems.filter((item) => {
+      const linked = item.linkedEquipment ? item.linkedEquipment.trim() : '';
+      if (!linked) return true; // Non vincolato: visibile per tutti
+
+      if (!clientSupports || typeof clientSupports !== 'object') {
+        return false; // Il cliente non ha supporti per questa azienda
+      }
+
+      const matchKey = Object.keys(clientSupports).find(
+        (k) => k.trim().toLowerCase() === linked.toLowerCase()
+      );
+      if (!matchKey) {
+        return false; // Non possiede questo supporto
+      }
+
+      const qty = Number(clientSupports[matchKey]);
+      return !isNaN(qty) && qty > 0; // Escluso se ha quantità 0
+    });
+  }, [currentUpdate, client]);
+
+  const hasContentItems = applicableContentItems.length > 0;
 
   useEffect(() => {
     if (showDetails) return;
@@ -1039,9 +1072,9 @@ function ClientDeliveryRow({
     setAlert(delivery ? !!delivery.alert : false);
     setCustomDateLocal(delivery ? toDateTimeLocal(delivery.deliveredAt) : toDateTimeLocal());
 
-    if (hasContentItems) {
+    if (applicableContentItems.length > 0) {
       setMaterialsState(
-        currentUpdate.contentItems.map((item) => {
+        applicableContentItems.map((item) => {
           const existingMat = delivery?.deliveredMaterials?.find(
             (m) => m.id === item.id || m.name === item.name
           );
@@ -1054,6 +1087,7 @@ function ClientDeliveryRow({
             id: item.id,
             name: item.name,
             unitQty,
+            linkedEquipment: item.linkedEquipment || '',
             expectedQty: expectedForClient,
             deliveredQty: existingMat ? Number(existingMat.deliveredQty) : expectedForClient
           };
@@ -1062,7 +1096,7 @@ function ClientDeliveryRow({
     } else {
       setMaterialsState([]);
     }
-  }, [delivery, defaultTargetQty, customMaterialsConfig, currentUpdate, hasContentItems, showDetails]);
+  }, [delivery, defaultTargetQty, customMaterialsConfig, applicableContentItems, showDetails]);
 
   const handleKitQuantityChange = (newKitQty) => {
     const safeKit = Math.max(1, newKitQty);
@@ -1232,21 +1266,29 @@ function ClientDeliveryRow({
             </div>
           </div>
 
-          {hasContentItems && (
+          {hasContentItems ? (
             <div className="bg-white p-3 rounded-xl border border-slate-200 space-y-2">
-              <div className="font-bold text-slate-700 text-xs">
-                Singoli Materiali Consegnati
+              <div className="flex items-center justify-between font-bold text-slate-700 text-xs">
+                <span>Singoli Materiali Consegnati</span>
+                <span className="text-[10px] text-slate-400 font-normal">
+                  (filtrati per dotazione cliente)
+                </span>
               </div>
               <div className="divide-y divide-slate-100">
                 {materialsState.map((mat) => (
                   <div key={mat.id} className="py-2 flex items-center justify-between gap-2">
-                    <div>
+                    <div className="flex items-center flex-wrap gap-1 min-w-0">
                       <span className="font-bold text-slate-800">{mat.name}</span>
-                      <span className="text-[10px] text-slate-400 ml-1.5">
+                      <span className="text-[10px] text-slate-400">
                         ({mat.unitQty} per kit)
                       </span>
+                      {mat.linkedEquipment && (
+                        <span className="text-[10px] bg-amber-50 text-amber-900 border border-amber-200 px-1.5 py-0.2 rounded font-semibold ml-1">
+                          🔗 {mat.linkedEquipment}
+                        </span>
+                      )}
                     </div>
-                    <div className="flex items-center space-x-2">
+                    <div className="flex items-center space-x-2 flex-shrink-0">
                       <button
                         type="button"
                         onClick={() => handleSingleMaterialChange(mat.id, -1)}
@@ -1266,6 +1308,10 @@ function ClientDeliveryRow({
                   </div>
                 ))}
               </div>
+            </div>
+          ) : (
+            <div className="bg-white p-3.5 rounded-xl border border-slate-200 text-slate-400 text-xs text-center italic">
+              Nessun materiale specifico da consegnare per la dotazione showroom di questo cliente.
             </div>
           )}
 
