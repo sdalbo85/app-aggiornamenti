@@ -2294,13 +2294,21 @@ function AlertsTab({ agents, companies, updates, clients, setClients, deliveries
 }
 
 function ClientsManagerTab({ agents, companies, updates, clients, setClients, setDeliveries }) {
+  const DEFAULT_EQUIPMENT = ['Catalogo', 'Mazzetta Laccati', 'Vetri'];
+
+  const getCompanySupports = (comp) => {
+    if (!comp) return DEFAULT_EQUIPMENT;
+    if (Array.isArray(comp.standardEquipment) && comp.standardEquipment.length > 0) {
+      return comp.standardEquipment;
+    }
+    return DEFAULT_EQUIPMENT;
+  };
+
   const [editingClientId, setEditingClientId] = useState(null);
   const [name, setName] = useState('');
   const [province, setProvince] = useState('');
   const [agentId, setAgentId] = useState('');
   const [companyConfigs, setCompanyConfigs] = useState({});
-  const [expandedCompId, setExpandedCompId] = useState(null);
-  const [newMatInput, setNewMatInput] = useState({});
 
   // Filtri tabella clienti
   const [searchFilter, setSearchFilter] = useState('');
@@ -2321,30 +2329,35 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'it'));
   }, [clients]);
 
-  // Ricava i materiali dai cataloghi dell'azienda, con voci base di default se non ci sono ancora aggiornamenti
-  const companyMaterialsMap = useMemo(() => {
-    const map = {};
-    companies.forEach((comp) => {
-      const namesSet = new Set();
-      updates
-        .filter((u) => u.companyId === comp.id)
-        .forEach((u) => {
-          (u.contentItems || []).forEach((it) => {
-            if (it.name) namesSet.add(it.name);
-          });
-        });
-      if (namesSet.size === 0) {
-        ['Catalogo', 'Campionario', 'Listino'].forEach((def) => namesSet.add(def));
-      }
-      map[comp.id] = Array.from(namesSet);
-    });
-    return map;
-  }, [companies, updates]);
-
   const handleSaveClient = (e) => {
     e.preventDefault();
     if (!name.trim() || !province.trim() || !agentId) return;
     const activeCompanyIds = Object.keys(companyConfigs).filter((id) => companyConfigs[id]?.enabled);
+
+    const finalizedConfigs = {};
+    activeCompanyIds.forEach((cId) => {
+      const cfg = companyConfigs[cId] || { enabled: true, quantity: 1 };
+      const compObj = companies.find((c) => c.id === cId);
+      const supports = getCompanySupports(compObj);
+      const custom = {};
+      const sourceMap = cfg.customMaterials || cfg.fixedSupports || {};
+
+      supports.forEach((s) => {
+        if (sourceMap[s] !== undefined) {
+          custom[s] = Math.max(0, parseInt(sourceMap[s], 10) || 0);
+        } else {
+          custom[s] = cfg.quantity !== undefined ? Math.max(0, Number(cfg.quantity) || 0) : 1;
+        }
+      });
+
+      const maxQty = Math.max(1, ...Object.values(custom).map((q) => Number(q) || 0));
+      finalizedConfigs[cId] = {
+        enabled: true,
+        quantity: maxQty,
+        customMaterials: custom,
+        fixedSupports: custom
+      };
+    });
 
     if (editingClientId) {
       setClients((prev) =>
@@ -2356,7 +2369,7 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                 province: province.trim().toUpperCase(),
                 agentId,
                 companyIds: activeCompanyIds,
-                companyConfigs
+                companyConfigs: finalizedConfigs
               }
             : c
         )
@@ -2371,7 +2384,7 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
           province: province.trim().toUpperCase(),
           agentId,
           companyIds: activeCompanyIds,
-          companyConfigs
+          companyConfigs: finalizedConfigs
         }
       ]);
     }
@@ -2379,8 +2392,6 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     setProvince('');
     setAgentId('');
     setCompanyConfigs({});
-    setExpandedCompId(null);
-    setNewMatInput({});
   };
 
   const handleEditClient = (cl) => {
@@ -2390,38 +2401,74 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     setAgentId(cl.agentId || '');
     const restored = {};
     (cl.companyIds || []).forEach((id) => {
+      const existingCfg = cl.companyConfigs?.[id];
+      const compObj = companies.find((co) => co.id === id);
+      const supports = getCompanySupports(compObj);
+      const existingCustom = existingCfg?.customMaterials || existingCfg?.fixedSupports;
+      const custom = {};
+
+      supports.forEach((s) => {
+        if (existingCustom && existingCustom[s] !== undefined) {
+          custom[s] = Math.max(0, parseInt(existingCustom[s], 10) || 0);
+        } else {
+          custom[s] = existingCfg?.quantity ? Math.max(0, Number(existingCfg.quantity)) : 1;
+        }
+      });
+
+      const maxQty = Math.max(1, ...Object.values(custom).map((q) => Number(q) || 0));
       restored[id] = {
         enabled: true,
-        quantity: cl.companyConfigs?.[id]?.quantity || 1,
-        customMaterials: cl.companyConfigs?.[id]?.customMaterials || null
+        quantity: maxQty,
+        customMaterials: custom,
+        fixedSupports: custom
       };
     });
     setCompanyConfigs(restored);
-    setExpandedCompId(null);
-    setNewMatInput({});
   };
 
-  const handleCustomMatQtyChange = (compId, matName, val) => {
+  const handleSupportQtyChange = (compId, supportName, val) => {
     const curr = companyConfigs[compId] || { enabled: true, quantity: 1 };
-    const prevCustom = curr.customMaterials || {};
+    const compObj = companies.find((c) => c.id === compId);
+    const allSupports = getCompanySupports(compObj);
+    const prevCustom = curr.customMaterials || curr.fixedSupports || {};
     const parsed = Math.max(0, parseInt(val, 10) || 0);
+
+    const updatedCustom = { ...prevCustom, [supportName]: parsed };
+    allSupports.forEach((s) => {
+      if (updatedCustom[s] === undefined) {
+        updatedCustom[s] = curr.quantity !== undefined ? Math.max(0, Number(curr.quantity) || 0) : 1;
+      }
+    });
+
+    const maxQty = Math.max(1, ...Object.values(updatedCustom).map((q) => Number(q) || 0));
     setCompanyConfigs({
       ...companyConfigs,
       [compId]: {
         ...curr,
-        customMaterials: {
-          ...prevCustom,
-          [matName]: parsed
-        }
+        enabled: true,
+        quantity: maxQty,
+        customMaterials: updatedCustom,
+        fixedSupports: updatedCustom
       }
     });
   };
 
-  const handleAddCustomMaterialName = (compId) => {
-    const rawName = (newMatInput[compId] || '').trim();
-    if (!rawName) return;
-    handleCustomMatQtyChange(compId, rawName, 1);
-    setNewMatInput({ ...newMatInput, [compId]: '' });
+  const handleSetAllSupportsQty = (compId, targetQty) => {
+    const compObj = companies.find((c) => c.id === compId);
+    const allSupports = getCompanySupports(compObj);
+    const updatedCustom = {};
+    allSupports.forEach((s) => {
+      updatedCustom[s] = targetQty;
+    });
+    setCompanyConfigs({
+      ...companyConfigs,
+      [compId]: {
+        enabled: true,
+        quantity: Math.max(1, targetQty),
+        customMaterials: updatedCustom,
+        fixedSupports: updatedCustom
+      }
+    });
   };
 
   const filteredClients = clients
@@ -2458,7 +2505,7 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
       <form onSubmit={handleSaveClient} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-sm">
-            {editingClientId ? 'Modifica Cliente e Dotazione Materiali' : 'Nuovo Cliente'}
+            {editingClientId ? 'Modifica Cliente e Dotazione Supporti Fissi' : 'Nuovo Cliente'}
           </h3>
           {editingClientId && (
             <button
@@ -2469,9 +2516,8 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                 setProvince('');
                 setAgentId('');
                 setCompanyConfigs({});
-                setExpandedCompId(null);
               }}
-              className="text-xs text-slate-400 underline"
+              className="text-xs text-slate-400 hover:text-slate-600 underline"
             >
               Annulla Modifica
             </button>
@@ -2512,24 +2558,18 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
 
         <div className="space-y-2">
           <div className="text-xs font-bold text-slate-500 uppercase">
-            Aziende Trattate & Materiale in Dotazione al Cliente:
+            Aziende Trattate & Supporti Fissi in Dotazione al Cliente:
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {companies.map((comp) => {
               const cfg = companyConfigs[comp.id] || { enabled: false, quantity: 1, customMaterials: null };
-              const baseMats = companyMaterialsMap[comp.id] || [];
-              const extraCustomKeys = cfg.customMaterials
-                ? Object.keys(cfg.customMaterials).filter((k) => !baseMats.includes(k))
-                : [];
-              const allMats = [...baseMats, ...extraCustomKeys];
-              const isExpanded = expandedCompId === comp.id;
-              const hasCustom = cfg.customMaterials && Object.keys(cfg.customMaterials).length > 0;
+              const companySupports = getCompanySupports(comp);
 
               return (
                 <div
                   key={comp.id}
-                  className={`p-3 rounded-xl border text-xs space-y-2.5 transition-all ${
-                    cfg.enabled ? 'bg-indigo-50/40 border-indigo-200' : 'border-slate-200'
+                  className={`p-3.5 rounded-xl border text-xs space-y-3 transition-all ${
+                    cfg.enabled ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50/40 border-slate-200'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -2537,127 +2577,147 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                       <input
                         type="checkbox"
                         checked={cfg.enabled}
-                        onChange={() =>
-                          setCompanyConfigs({
-                            ...companyConfigs,
-                            [comp.id]: { ...cfg, enabled: !cfg.enabled }
-                          })
-                        }
+                        onChange={() => {
+                          const nextEnabled = !cfg.enabled;
+                          if (nextEnabled) {
+                            const initialCustom = {};
+                            companySupports.forEach((s) => {
+                              initialCustom[s] = 1;
+                            });
+                            setCompanyConfigs({
+                              ...companyConfigs,
+                              [comp.id]: {
+                                enabled: true,
+                                quantity: 1,
+                                customMaterials: cfg.customMaterials || initialCustom,
+                                fixedSupports: cfg.fixedSupports || initialCustom
+                              }
+                            });
+                          } else {
+                            setCompanyConfigs({
+                              ...companyConfigs,
+                              [comp.id]: { ...cfg, enabled: false }
+                            });
+                          }
+                        }}
+                        className="rounded text-indigo-600 focus:ring-indigo-500"
                       />
-                      <span>{comp.name}</span>
+                      <span className="text-sm">{comp.name}</span>
+                      {comp.code && (
+                        <span className="text-[10px] bg-slate-200/80 text-slate-600 px-1.5 py-0.5 rounded font-semibold uppercase">
+                          {comp.code}
+                        </span>
+                      )}
                     </label>
 
                     {cfg.enabled && (
                       <div className="flex items-center space-x-2">
-                        {!hasCustom && (
-                          <div className="flex items-center space-x-1">
-                            <span className="text-[11px] text-slate-500">Kit:</span>
-                            <input
-                              type="number"
-                              min="1"
-                              value={cfg.quantity}
-                              onChange={(e) =>
-                                setCompanyConfigs({
-                                  ...companyConfigs,
-                                  [comp.id]: {
-                                    ...cfg,
-                                    quantity: Math.max(1, parseInt(e.target.value, 10) || 1)
-                                  }
-                                })
-                              }
-                              className="w-12 p-1 border border-slate-300 rounded text-center font-bold bg-white"
-                            />
-                          </div>
-                        )}
-
                         <button
                           type="button"
-                          onClick={() => setExpandedCompId(isExpanded ? null : comp.id)}
-                          className={`px-2 py-1 rounded-lg text-[11px] font-bold border ${
-                            hasCustom
-                              ? 'bg-indigo-600 text-white border-indigo-600'
-                              : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
-                          }`}
+                          onClick={() => handleSetAllSupportsQty(comp.id, 1)}
+                          className="text-[10px] text-indigo-600 hover:underline font-semibold"
+                          title="Imposta tutti i supporti a 1"
                         >
-                          {hasCustom ? 'Materiali Personalizzati' : 'Dettaglio Materiali'}
+                          Tutti a 1
+                        </button>
+                        <span className="text-slate-300">|</span>
+                        <button
+                          type="button"
+                          onClick={() => handleSetAllSupportsQty(comp.id, 0)}
+                          className="text-[10px] text-slate-400 hover:text-rose-500 underline font-semibold"
+                          title="Azzera quantità supporti"
+                        >
+                          Azzera
                         </button>
                       </div>
                     )}
                   </div>
 
-                  {cfg.enabled && isExpanded && (
-                    <div className="bg-white p-2.5 rounded-lg border border-indigo-100 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold text-slate-600">
-                          Quantità esatte in possesso del cliente:
+                  {cfg.enabled && (
+                    <div className="space-y-2 pt-1 border-t border-indigo-100">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-slate-700">
+                          Supporti fissi in showroom del cliente:
                         </span>
-                        {hasCustom && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setCompanyConfigs({
-                                ...companyConfigs,
-                                [comp.id]: { ...cfg, customMaterials: null }
-                              })
-                            }
-                            className="text-[10px] text-rose-500 underline"
-                          >
-                            Ripristina kit standard
-                          </button>
-                        )}
+                        <span className="text-[10px] text-slate-400">
+                          (0 = non presente)
+                        </span>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2">
-                        {allMats.map((mName) => {
+                      {/* Mostra ESCLUSIVAMENTE i supporti fissi configurati sull'azienda */}
+                      <div className="space-y-1.5">
+                        {companySupports.map((supportName) => {
                           const currentVal =
-                            cfg.customMaterials && cfg.customMaterials[mName] !== undefined
-                              ? cfg.customMaterials[mName]
-                              : cfg.quantity || 1;
+                            cfg.customMaterials && cfg.customMaterials[supportName] !== undefined
+                              ? cfg.customMaterials[supportName]
+                              : cfg.fixedSupports && cfg.fixedSupports[supportName] !== undefined
+                              ? cfg.fixedSupports[supportName]
+                              : cfg.quantity !== undefined
+                              ? cfg.quantity
+                              : 1;
+
                           return (
                             <div
-                              key={mName}
-                              className="flex items-center justify-between bg-slate-50 px-2 py-1.5 rounded border border-slate-200"
+                              key={supportName}
+                              className={`p-2 rounded-lg border flex items-center justify-between gap-2 shadow-2xs transition-colors ${
+                                currentVal > 0
+                                    ? 'bg-white border-slate-200 text-slate-800'
+                                    : 'bg-slate-100/70 border-slate-200 text-slate-400'
+                              }`}
                             >
-                              <span className="font-semibold text-slate-700 truncate pr-1">
-                                {mName}
-                              </span>
-                              <input
-                                type="number"
-                                min="0"
-                                value={currentVal}
-                                onChange={(e) =>
-                                  handleCustomMatQtyChange(comp.id, mName, e.target.value)
-                                }
-                                className="w-12 p-1 border border-slate-300 rounded text-center font-bold bg-white"
-                              />
+                              <div className="min-w-0 flex-1">
+                                <span
+                                  className={`font-semibold text-xs truncate ${
+                                    currentVal > 0 ? 'text-slate-800' : 'text-slate-400 line-through'
+                                  }`}
+                                  title={supportName}
+                                >
+                                  {supportName}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center space-x-1 flex-shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleSupportQtyChange(
+                                      comp.id,
+                                      supportName,
+                                      Math.max(0, Number(currentVal || 0) - 1)
+                                    )
+                                  }
+                                  className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded text-xs"
+                                  title="Diminuisci quantità"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={currentVal}
+                                  onChange={(e) =>
+                                    handleSupportQtyChange(comp.id, supportName, e.target.value)
+                                  }
+                                  className="w-12 p-1 border border-slate-300 rounded text-center font-bold text-xs bg-white"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleSupportQtyChange(
+                                      comp.id,
+                                      supportName,
+                                      Number(currentVal || 0) + 1
+                                    )
+                                  }
+                                  className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded text-xs"
+                                  title="Aumenta quantità"
+                                >
+                                  +
+                                </button>
+                              </div>
                             </div>
                           );
                         })}
-                      </div>
-
-                      <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
-                        <input
-                          type="text"
-                          placeholder="Aggiungi altro materiale (es. Tirelle)..."
-                          value={newMatInput[comp.id] || ''}
-                          onChange={(e) =>
-                            setNewMatInput({ ...newMatInput, [comp.id]: e.target.value })
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              handleAddCustomMaterialName(comp.id);
-                            }
-                          }}
-                          className="flex-1 px-2 py-1 text-[11px] border border-slate-200 rounded bg-slate-50"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleAddCustomMaterialName(comp.id)}
-                          className="px-2.5 py-1 bg-slate-800 text-white text-[11px] font-bold rounded"
-                        >
-                          + Voce
-                        </button>
                       </div>
                     </div>
                   )}
@@ -2667,7 +2727,7 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
           </div>
         </div>
 
-        <button type="submit" className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
+        <button type="submit" className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm transition-colors">
           {editingClientId ? 'Salva Modifiche Cliente' : '+ Salva Cliente'}
         </button>
       </form>
@@ -2742,7 +2802,7 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
               <th className="p-3">Cliente</th>
               <th className="p-3">Prov</th>
               <th className="p-3">Agente</th>
-              <th className="p-3">Aziende & Dotazione Materiale</th>
+              <th className="p-3">Aziende & Dotazione Supporti Fissi</th>
               <th className="p-3 text-right">Azioni</th>
             </tr>
           </thead>
@@ -2767,19 +2827,23 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                           const comp = companies.find((co) => co.id === id);
                           if (!comp) return null;
                           const cfg = c.companyConfigs?.[id] || {};
-                          const custom = cfg.customMaterials;
-                          const label =
-                            custom && Object.keys(custom).length > 0
-                              ? Object.entries(custom)
-                                  .filter(([, q]) => Number(q) > 0)
-                                  .map(([mName, q]) => `${q}x ${mName}`)
-                                  .join(', ')
-                              : `${cfg.quantity || 1} kit`;
+                          const custom = cfg.customMaterials || cfg.fixedSupports;
+
+                          let label = `${cfg.quantity || 1} kit`;
+                          if (custom && typeof custom === 'object') {
+                            const activeEntries = Object.entries(custom).filter(([, q]) => Number(q) > 0);
+                            if (activeEntries.length > 0) {
+                              label = activeEntries.map(([sName, q]) => `${q}x ${sName}`).join(', ');
+                            } else {
+                              label = 'Nessun supporto';
+                            }
+                          }
 
                           return (
                             <span
                               key={id}
                               className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold border border-indigo-100"
+                              title={`${comp.name}: ${label}`}
                             >
                               {comp.name}: {label}
                             </span>
@@ -2788,15 +2852,22 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                       </div>
                     </td>
                     <td className="p-3 text-right space-x-1">
-                      <button onClick={() => handleEditClient(c)} className="p-1.5 text-slate-500 hover:text-indigo-600">
+                      <button
+                        type="button"
+                        onClick={() => handleEditClient(c)}
+                        className="p-1.5 text-slate-500 hover:text-indigo-600 rounded-lg"
+                        title="Modifica cliente e supporti fissi"
+                      >
                         <Edit3 className="w-4 h-4" />
                       </button>
                       <button
+                        type="button"
                         onClick={() => {
                           setClients((prev) => prev.filter((cl) => cl.id !== c.id));
                           setDeliveries((prev) => prev.filter((d) => d.clientId !== c.id));
                         }}
-                        className="p-1.5 text-rose-500"
+                        className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
+                        title="Elimina cliente"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -2812,21 +2883,51 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
   );
 }
 function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, setDeliveries }) {
+  const DEFAULT_EQUIPMENT = ['Catalogo', 'Mazzetta Laccati', 'Vetri'];
+
   const [companyName, setCompanyName] = useState('');
   const [companyCode, setCompanyCode] = useState('');
   const [editingCompanyId, setEditingCompanyId] = useState(null);
+  const [companyEquipment, setCompanyEquipment] = useState(DEFAULT_EQUIPMENT);
+  const [newEquipInput, setNewEquipInput] = useState('');
 
   const [editingUpdateId, setEditingUpdateId] = useState(null);
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
   const [updateTitle, setUpdateTitle] = useState('');
   const [updateYear, setUpdateYear] = useState(String(new Date().getFullYear()));
-  const [contentItems, setContentItems] = useState([{ id: 'item_init_1', name: 'Catalogo', qty: 1 }]);
+  const [contentItems, setContentItems] = useState([
+    { id: 'item_init_1', name: 'Catalogo', qty: 1, linkedEquipment: '' }
+  ]);
   const [newItemName, setNewItemName] = useState('');
   const [newItemQty, setNewItemQty] = useState(1);
+  const [newItemLinkedEquipment, setNewItemLinkedEquipment] = useState('');
+
+  // Trova l'azienda correntemente selezionata per l'aggiornamento
+  const activeCompanyId = selectedCompanyId || (companies[0] && companies[0].id) || '';
+  const activeCompany = companies.find((c) => c.id === activeCompanyId);
+  const activeCompanySupports =
+    activeCompany && Array.isArray(activeCompany.standardEquipment) && activeCompany.standardEquipment.length > 0
+      ? activeCompany.standardEquipment
+      : DEFAULT_EQUIPMENT;
+
+  const handleAddEquipmentToForm = (nameToAdd) => {
+    const val = (nameToAdd || newEquipInput).trim();
+    if (!val) return;
+    if (!companyEquipment.some((item) => item.toLowerCase() === val.toLowerCase())) {
+      setCompanyEquipment((prev) => [...prev, val]);
+    }
+    setNewEquipInput('');
+  };
+
+  const handleRemoveEquipmentFromForm = (itemToRemove) => {
+    setCompanyEquipment((prev) => prev.filter((it) => it !== itemToRemove));
+  };
 
   const handleSaveCompany = (e) => {
     e.preventDefault();
     if (!companyName.trim()) return;
+    const cleanEquipment = companyEquipment.map((s) => s.trim()).filter(Boolean);
+
     if (editingCompanyId) {
       setCompanies((prev) =>
         prev.map((c) =>
@@ -2834,7 +2935,8 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
             ? {
                 ...c,
                 name: companyName.trim(),
-                code: companyCode.trim() || companyName.substring(0, 3).toUpperCase()
+                code: companyCode.trim() || companyName.substring(0, 3).toUpperCase(),
+                standardEquipment: cleanEquipment
               }
             : c
         )
@@ -2846,12 +2948,15 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
         {
           id: 'comp_' + Date.now(),
           name: companyName.trim(),
-          code: companyCode.trim() || companyName.substring(0, 3).toUpperCase()
+          code: companyCode.trim() || companyName.substring(0, 3).toUpperCase(),
+          standardEquipment: cleanEquipment
         }
       ]);
     }
     setCompanyName('');
     setCompanyCode('');
+    setCompanyEquipment(DEFAULT_EQUIPMENT);
+    setNewEquipInput('');
   };
 
   const handleAddContentItem = () => {
@@ -2861,20 +2966,23 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
       {
         id: 'item_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
         name: newItemName.trim(),
-        qty: Math.max(1, parseInt(newItemQty, 10) || 1)
+        qty: Math.max(1, parseInt(newItemQty, 10) || 1),
+        linkedEquipment: newItemLinkedEquipment || ''
       }
     ]);
     setNewItemName('');
     setNewItemQty(1);
+    setNewItemLinkedEquipment('');
   };
 
   const resetUpdateForm = () => {
     setEditingUpdateId(null);
     setUpdateTitle('');
     setUpdateYear(String(new Date().getFullYear()));
-    setContentItems([{ id: 'item_' + Date.now(), name: 'Catalogo', qty: 1 }]);
+    setContentItems([{ id: 'item_' + Date.now(), name: 'Catalogo', qty: 1, linkedEquipment: '' }]);
     setNewItemName('');
     setNewItemQty(1);
+    setNewItemLinkedEquipment('');
   };
 
   const handleSaveUpdate = (e) => {
@@ -2917,11 +3025,19 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
     setSelectedCompanyId(upd.companyId);
     setUpdateTitle(upd.title);
     setUpdateYear(String(upd.year || new Date().getFullYear()));
-    setContentItems(Array.isArray(upd.contentItems) ? [...upd.contentItems] : []);
+    setContentItems(
+      Array.isArray(upd.contentItems)
+        ? upd.contentItems.map((it) => ({
+            ...it,
+            linkedEquipment: it.linkedEquipment || ''
+          }))
+        : []
+    );
   };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {/* Colonna Sinistra: Gestione Aziende e Dotazione Standard */}
       <div className="lg:col-span-5 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-sm">
@@ -2934,14 +3050,17 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
                 setEditingCompanyId(null);
                 setCompanyName('');
                 setCompanyCode('');
+                setCompanyEquipment(DEFAULT_EQUIPMENT);
+                setNewEquipInput('');
               }}
-              className="text-xs text-slate-400 underline"
+              className="text-xs text-slate-400 hover:text-slate-600 underline"
             >
               Annulla
             </button>
           )}
         </div>
-        <form onSubmit={handleSaveCompany} className="space-y-2.5">
+
+        <form onSubmit={handleSaveCompany} className="space-y-3">
           <input
             type="text"
             required
@@ -2957,44 +3076,246 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
             onChange={(e) => setCompanyCode(e.target.value)}
             className="w-full p-2.5 text-xs border border-slate-200 rounded-xl"
           />
-          <button type="submit" className="w-full py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
+
+          {/* Configurazione Dotazione Standard / Supporti Fissi */}
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-700">
+                Dotazione Standard / Supporti Fissi:
+              </label>
+              <span className="text-[10px] text-slate-400">Supporti showroom cliente</span>
+            </div>
+
+            {/* Elenco supporti configurati per l'azienda */}
+            <div className="flex flex-wrap gap-1.5">
+              {companyEquipment.map((eq) => (
+                <span
+                  key={eq}
+                  className="bg-white border border-slate-200 text-slate-800 text-[11px] font-semibold px-2 py-1 rounded-lg flex items-center gap-1 shadow-xs"
+                >
+                  <span>{eq}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveEquipmentFromForm(eq)}
+                    className="text-rose-500 hover:text-rose-700 ml-0.5 font-bold"
+                    title="Rimuovi supporto"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {companyEquipment.length === 0 && (
+                <span className="text-xs text-slate-400 italic">
+                  Nessun supporto configurato.
+                </span>
+              )}
+            </div>
+
+            {/* Input per aggiunta supporto */}
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                placeholder="Nuovo supporto fisso (es. Vetri, Mazzetta...)"
+                value={newEquipInput}
+                onChange={(e) => setNewEquipInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddEquipmentToForm();
+                  }
+                }}
+                className="flex-1 p-2 text-xs bg-white border border-slate-200 rounded-xl"
+              />
+              <button
+                type="button"
+                onClick={() => handleAddEquipmentToForm()}
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl"
+              >
+                + Aggiungi
+              </button>
+            </div>
+
+            {/* Suggerimenti veloci */}
+            <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-slate-200/60">
+              <span className="text-[10px] text-slate-400 font-semibold mr-1">Predefiniti:</span>
+              {['Catalogo', 'Mazzetta Laccati', 'Vetri', 'Campionario Tessuti'].map((sug) => {
+                const alreadyAdded = companyEquipment.some(
+                  (item) => item.toLowerCase() === sug.toLowerCase()
+                );
+                if (alreadyAdded) return null;
+                return (
+                  <button
+                    key={sug}
+                    type="button"
+                    onClick={() => handleAddEquipmentToForm(sug)}
+                    className="text-[10px] bg-slate-200/80 hover:bg-indigo-100 hover:text-indigo-700 text-slate-600 px-1.5 py-0.5 rounded transition-colors"
+                  >
+                    + {sug}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm transition-colors"
+          >
             {editingCompanyId ? 'Salva Modifica Azienda' : '+ Aggiungi Azienda'}
           </button>
         </form>
-        <div className="divide-y divide-slate-100">
-          {companies.map((comp) => (
-            <div key={comp.id} className="py-2.5 flex justify-between items-center text-sm font-bold">
-              <span>{comp.name}</span>
-              <div className="flex items-center space-x-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingCompanyId(comp.id);
-                    setCompanyName(comp.name);
-                    setCompanyCode(comp.code || '');
-                  }}
-                  className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg"
-                  title="Modifica azienda"
-                >
-                  <Edit3 className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCompanies((prev) => prev.filter((c) => c.id !== comp.id));
-                    setUpdates((prev) => prev.filter((u) => u.companyId !== comp.id));
-                  }}
-                  className="p-1.5 text-rose-500 rounded-lg"
-                  title="Elimina azienda"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+
+        {/* Lista Aziende con Supporti Fissi associati */}
+        <div className="divide-y divide-slate-100 pt-1">
+          {companies.map((comp) => {
+            const currentEquip =
+              Array.isArray(comp.standardEquipment) && comp.standardEquipment.length > 0
+                ? comp.standardEquipment
+                : DEFAULT_EQUIPMENT;
+
+            return (
+              <div key={comp.id} className="py-3 space-y-2">
+                <div className="flex justify-between items-center text-sm font-bold">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-slate-900">{comp.name}</span>
+                    {comp.code && (
+                      <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded uppercase font-semibold">
+                        {comp.code}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCompanyId(comp.id);
+                        setCompanyName(comp.name);
+                        setCompanyCode(comp.code || '');
+                        setCompanyEquipment(
+                          Array.isArray(comp.standardEquipment) && comp.standardEquipment.length > 0
+                            ? [...comp.standardEquipment]
+                            : DEFAULT_EQUIPMENT
+                        );
+                        setNewEquipInput('');
+                      }}
+                      className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg"
+                      title="Modifica azienda e dotazione standard"
+                    >
+                      <Edit3 className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (editingCompanyId === comp.id) {
+                          setEditingCompanyId(null);
+                          setCompanyName('');
+                          setCompanyCode('');
+                          setCompanyEquipment(DEFAULT_EQUIPMENT);
+                        }
+                        setCompanies((prev) => prev.filter((c) => c.id !== comp.id));
+                        setUpdates((prev) => prev.filter((u) => u.companyId !== comp.id));
+                      }}
+                      className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg"
+                      title="Elimina azienda"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Dotazione Standard dell'Azienda */}
+                <div className="bg-slate-50/80 p-2.5 rounded-xl border border-slate-100 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold text-slate-600">Dotazione Standard / Supporti Fissi:</span>
+                    <span className="text-[10px] text-slate-400">
+                      {currentEquip.length} {currentEquip.length === 1 ? 'supporto' : 'supporti'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1">
+                    {currentEquip.map((eq) => (
+                      <span
+                        key={eq}
+                        className="text-[10px] bg-white text-slate-700 font-semibold px-2 py-0.5 rounded-md border border-slate-200 flex items-center gap-1 shadow-2xs"
+                      >
+                        <span>{eq}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updatedList = currentEquip.filter((item) => item !== eq);
+                            setCompanies((prev) =>
+                              prev.map((c) =>
+                                c.id === comp.id ? { ...c, standardEquipment: updatedList } : c
+                              )
+                            );
+                          }}
+                          className="text-slate-400 hover:text-rose-600 font-bold"
+                          title={`Rimuovi ${eq}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    {currentEquip.length === 0 && (
+                      <span className="text-[11px] text-slate-400 italic">
+                        Nessun supporto fisso configurato.
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Micro-input per aggiunta rapida supporto fisso all'azienda */}
+                  <div className="flex gap-1 pt-1">
+                    <input
+                      type="text"
+                      placeholder="+ Aggiungi supporto rapido..."
+                      id={`quick-add-${comp.id}`}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const val = e.currentTarget.value.trim();
+                          if (val && !currentEquip.some((x) => x.toLowerCase() === val.toLowerCase())) {
+                            const updatedList = [...currentEquip, val];
+                            setCompanies((prev) =>
+                              prev.map((c) =>
+                                c.id === comp.id ? { ...c, standardEquipment: updatedList } : c
+                              )
+                            );
+                            e.currentTarget.value = '';
+                          }
+                        }
+                      }}
+                      className="flex-1 px-2 py-1 text-[11px] bg-white border border-slate-200 rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const input = document.getElementById(`quick-add-${comp.id}`);
+                        if (input) {
+                          const val = input.value.trim();
+                          if (val && !currentEquip.some((x) => x.toLowerCase() === val.toLowerCase())) {
+                            const updatedList = [...currentEquip, val];
+                            setCompanies((prev) =>
+                              prev.map((c) =>
+                                c.id === comp.id ? { ...c, standardEquipment: updatedList } : c
+                              )
+                            );
+                            input.value = '';
+                          }
+                        }
+                      }}
+                      className="px-2.5 py-1 text-[11px] bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-lg"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
+      {/* Colonna Destra: Pubblicazione Aggiornamento e Distinta Materiali */}
       <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-sm">
@@ -3045,69 +3366,157 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
             />
           </div>
 
-          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
-            <div className="text-xs font-bold">Distinta Materiali per 1 Kit:</div>
-            <div className="flex flex-wrap gap-2">
-              {contentItems.map((it) => (
-                <span key={it.id} className="bg-white border px-2.5 py-1 rounded-lg text-xs font-bold">
-                  {it.qty}x {it.name}{' '}
-                  <button
-                    type="button"
-                    onClick={() => setContentItems((prev) => prev.filter((x) => x.id !== it.id))}
-                    className="text-rose-500 ml-1"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
+          {/* Distinta Materiali per Kit con Vincolo Dotazione Cliente su ogni riga */}
+          <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-700">Distinta Materiali per 1 Kit:</span>
+              <span className="text-[11px] text-slate-500">
+                {contentItems.length} {contentItems.length === 1 ? 'materiale' : 'materiali'}
+              </span>
             </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Materiale (es. Listino)"
-                value={newItemName}
-                onChange={(e) => setNewItemName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleAddContentItem();
-                  }
-                }}
-                className="flex-1 p-2 text-xs bg-white border rounded-xl"
-              />
-              <input
-                type="number"
-                min="1"
-                value={newItemQty}
-                onChange={(e) => setNewItemQty(e.target.value)}
-                className="w-16 p-2 text-xs bg-white border rounded-xl text-center font-bold"
-              />
-              <button
-                type="button"
-                onClick={handleAddContentItem}
-                className="px-3 py-2 bg-slate-800 text-white text-xs font-bold rounded-xl"
-              >
-                + Voce
-              </button>
+
+            {/* Righe dei materiali presenti */}
+            {contentItems.length === 0 ? (
+              <div className="p-3 bg-white rounded-xl border border-dashed border-slate-300 text-center text-xs text-slate-400">
+                Nessun materiale specificato. Aggiungi il primo materiale qui sotto.
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {contentItems.map((it) => (
+                  <div
+                    key={it.id}
+                    className="bg-white border border-slate-200 rounded-xl p-2.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 shadow-2xs"
+                  >
+                    {/* Quantità e Nome del materiale */}
+                    <div className="flex items-center space-x-2 min-w-0 flex-1">
+                      <span className="bg-slate-100 text-slate-800 font-bold text-xs px-2 py-1 rounded-lg border border-slate-200 flex-shrink-0">
+                        {it.qty}x
+                      </span>
+                      <span className="text-xs font-bold text-slate-800 truncate" title={it.name}>
+                        {it.name}
+                      </span>
+                    </div>
+
+                    {/* Menu opzionale Vincola a dotazione cliente */}
+                    <div className="flex items-center space-x-2 flex-shrink-0">
+                      <div className="flex items-center space-x-1.5">
+                        <label
+                          htmlFor={`vincolo-select-${it.id}`}
+                          className="text-[11px] font-medium text-slate-500 hidden md:inline"
+                        >
+                          Vincolo cliente:
+                        </label>
+                        <select
+                          id={`vincolo-select-${it.id}`}
+                          value={it.linkedEquipment || ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setContentItems((prev) =>
+                              prev.map((item) =>
+                                item.id === it.id ? { ...item, linkedEquipment: val } : item
+                              )
+                            );
+                          }}
+                          className={`text-xs py-1 px-2.5 rounded-lg border focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-colors ${
+                            it.linkedEquipment
+                              ? 'bg-amber-50 border-amber-300 text-amber-900 font-bold'
+                              : 'bg-slate-50 border-slate-200 text-slate-600 font-medium'
+                          }`}
+                          title="Vincola questo materiale al possesso del supporto fisso da parte del cliente"
+                        >
+                          <option value="">-- Nessun vincolo cliente (Per tutti) --</option>
+                          {activeCompanySupports.map((sup) => (
+                            <option key={sup} value={sup}>
+                              Vincola a: {sup}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setContentItems((prev) => prev.filter((x) => x.id !== it.id))}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                        title="Rimuovi materiale dalla distinta"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Inserimento nuovo materiale con menu Vincola a dotazione cliente */}
+            <div className="pt-2 border-t border-slate-200/70 space-y-1.5">
+              <div className="text-[11px] font-bold text-slate-600">Aggiungi materiale alla distinta:</div>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                <input
+                  type="text"
+                  placeholder="Materiale (es. Listino, Vetro specchio...)"
+                  value={newItemName}
+                  onChange={(e) => setNewItemName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddContentItem();
+                    }
+                  }}
+                  className="sm:col-span-5 p-2 text-xs bg-white border border-slate-200 rounded-xl"
+                />
+                <input
+                  type="number"
+                  min="1"
+                  value={newItemQty}
+                  onChange={(e) => setNewItemQty(e.target.value)}
+                  className="sm:col-span-2 p-2 text-xs bg-white border border-slate-200 rounded-xl text-center font-bold"
+                  title="Quantità per kit"
+                />
+                <select
+                  value={newItemLinkedEquipment}
+                  onChange={(e) => setNewItemLinkedEquipment(e.target.value)}
+                  className="sm:col-span-4 p-2 text-xs bg-white border border-slate-200 rounded-xl text-slate-700"
+                  title="Opzionale: vincola a supporto fisso / dotazione cliente"
+                >
+                  <option value="">-- Nessun vincolo cliente --</option>
+                  {activeCompanySupports.map((sup) => (
+                    <option key={sup} value={sup}>
+                      Vincola a: {sup}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleAddContentItem}
+                  className="sm:col-span-1 py-2 px-3 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl flex items-center justify-center transition-colors"
+                  title="Aggiungi materiale"
+                >
+                  +
+                </button>
+              </div>
             </div>
           </div>
 
-          <button type="submit" className="w-full py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-xl">
+          <button
+            type="submit"
+            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm transition-colors"
+          >
             {editingUpdateId ? 'Salva Modifiche Aggiornamento' : '+ Pubblica Aggiornamento'}
           </button>
         </form>
 
-        <div className="divide-y divide-slate-100">
+        {/* Elenco Aggiornamenti Pubblicati */}
+        <div className="divide-y divide-slate-100 pt-2">
           {updates.map((upd) => {
             const comp = companies.find((c) => c.id === upd.companyId);
             return (
               <div
                 key={upd.id}
                 className={`py-3 flex items-start justify-between gap-2 ${
-                  editingUpdateId === upd.id ? 'bg-indigo-50/60 px-2 rounded-xl' : ''
+                  editingUpdateId === upd.id ? 'bg-indigo-50/60 p-2 rounded-xl' : ''
                 }`}
               >
-                <div className="space-y-1.5">
+                <div className="space-y-1.5 flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5 text-xs">
                     <strong className="text-sm text-slate-900">{upd.title}</strong>
                     <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">
@@ -3123,9 +3532,17 @@ function CompaniesUpdatesTab({ companies, setCompanies, updates, setUpdates, set
                       {upd.contentItems.map((it) => (
                         <span
                           key={it.id}
-                          className="text-[11px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-semibold border border-indigo-100"
+                          className="text-[11px] bg-indigo-50 text-indigo-700 px-2 py-1 rounded-lg font-semibold border border-indigo-100 flex items-center gap-1.5"
                         >
-                          {it.qty}x {it.name}
+                          <span>{it.qty}x {it.name}</span>
+                          {it.linkedEquipment && (
+                            <span
+                              className="bg-amber-100 text-amber-900 border border-amber-300 text-[10px] px-1.5 py-0.2 rounded font-bold"
+                              title={`Vincolato a dotazione cliente: ${it.linkedEquipment}`}
+                            >
+                              🔗 {it.linkedEquipment}
+                            </span>
+                          )}
                         </span>
                       ))}
                     </div>
