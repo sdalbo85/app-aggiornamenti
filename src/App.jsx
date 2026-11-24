@@ -2350,11 +2350,18 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     return DEFAULT_EQUIPMENT;
   };
 
-  const [editingClientId, setEditingClientId] = useState(null);
+  // Stato form Nuovo Cliente
   const [name, setName] = useState('');
   const [province, setProvince] = useState('');
   const [agentId, setAgentId] = useState('');
   const [companyConfigs, setCompanyConfigs] = useState({});
+
+  // Stato modale Modifica Cliente
+  const [editingClientId, setEditingClientId] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editProvince, setEditProvince] = useState('');
+  const [editAgentId, setEditAgentId] = useState('');
+  const [editCompanyConfigs, setEditCompanyConfigs] = useState({});
 
   // Filtri tabella clienti
   const [searchFilter, setSearchFilter] = useState('');
@@ -2375,14 +2382,11 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'it'));
   }, [clients]);
 
-  const handleSaveClient = (e) => {
-    e.preventDefault();
-    if (!name.trim() || !province.trim() || !agentId) return;
-    const activeCompanyIds = Object.keys(companyConfigs).filter((id) => companyConfigs[id]?.enabled);
-
+  const finalizeConfigsForSave = (configsMap) => {
+    const activeCompanyIds = Object.keys(configsMap).filter((id) => configsMap[id]?.enabled);
     const finalizedConfigs = {};
     activeCompanyIds.forEach((cId) => {
-      const cfg = companyConfigs[cId] || { enabled: true, quantity: 1 };
+      const cfg = configsMap[cId] || { enabled: true, quantity: 1 };
       const compObj = companies.find((c) => c.id === cId);
       const supports = getCompanySupports(compObj);
       const custom = {};
@@ -2404,47 +2408,59 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
         fixedSupports: custom
       };
     });
+    return { activeCompanyIds, finalizedConfigs };
+  };
 
-    if (editingClientId) {
-      setClients((prev) =>
-        prev.map((c) =>
-          c.id === editingClientId
-            ? {
-                ...c,
-                name: name.trim(),
-                province: province.trim().toUpperCase(),
-                agentId,
-                companyIds: activeCompanyIds,
-                companyConfigs: finalizedConfigs
-              }
-            : c
-        )
-      );
-      setEditingClientId(null);
-    } else {
-      setClients((prev) => [
-        ...prev,
-        {
-          id: 'cl_' + Date.now(),
-          name: name.trim(),
-          province: province.trim().toUpperCase(),
-          agentId,
-          companyIds: activeCompanyIds,
-          companyConfigs: finalizedConfigs
-        }
-      ]);
-    }
+  const handleSaveClient = (e) => {
+    e.preventDefault();
+    if (!name.trim() || !province.trim() || !agentId) return;
+    const { activeCompanyIds, finalizedConfigs } = finalizeConfigsForSave(companyConfigs);
+
+    setClients((prev) => [
+      ...prev,
+      {
+        id: 'cl_' + Date.now(),
+        name: name.trim(),
+        province: province.trim().toUpperCase(),
+        agentId,
+        companyIds: activeCompanyIds,
+        companyConfigs: finalizedConfigs
+      }
+    ]);
+
     setName('');
     setProvince('');
     setAgentId('');
     setCompanyConfigs({});
   };
 
+  const handleSaveEditedClient = (e) => {
+    e.preventDefault();
+    if (!editingClientId || !editName.trim() || !editProvince.trim() || !editAgentId) return;
+    const { activeCompanyIds, finalizedConfigs } = finalizeConfigsForSave(editCompanyConfigs);
+
+    setClients((prev) =>
+      prev.map((c) =>
+        c.id === editingClientId
+          ? {
+              ...c,
+              name: editName.trim(),
+              province: editProvince.trim().toUpperCase(),
+              agentId: editAgentId,
+              companyIds: activeCompanyIds,
+              companyConfigs: finalizedConfigs
+            }
+          : c
+      )
+    );
+    setEditingClientId(null);
+  };
+
   const handleEditClient = (cl) => {
     setEditingClientId(cl.id);
-    setName(cl.name);
-    setProvince(cl.province || '');
-    setAgentId(cl.agentId || '');
+    setEditName(cl.name);
+    setEditProvince(cl.province || '');
+    setEditAgentId(cl.agentId || '');
     const restored = {};
     (cl.companyIds || []).forEach((id) => {
       const existingCfg = cl.companyConfigs?.[id];
@@ -2469,53 +2485,225 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
         fixedSupports: custom
       };
     });
-    setCompanyConfigs(restored);
+    setEditCompanyConfigs(restored);
   };
 
-  const handleSupportQtyChange = (compId, supportName, val) => {
-    const curr = companyConfigs[compId] || { enabled: true, quantity: 1 };
-    const compObj = companies.find((c) => c.id === compId);
-    const allSupports = getCompanySupports(compObj);
-    const prevCustom = curr.customMaterials || curr.fixedSupports || {};
-    const parsed = Math.max(0, parseInt(val, 10) || 0);
+  const handleSupportQtyChange = (setter, compId, supportName, val) => {
+    setter((prevConfigs) => {
+      const curr = prevConfigs[compId] || { enabled: true, quantity: 1 };
+      const compObj = companies.find((c) => c.id === compId);
+      const allSupports = getCompanySupports(compObj);
+      const prevCustom = curr.customMaterials || curr.fixedSupports || {};
+      const parsed = Math.max(0, parseInt(val, 10) || 0);
 
-    const updatedCustom = { ...prevCustom, [supportName]: parsed };
-    allSupports.forEach((s) => {
-      if (updatedCustom[s] === undefined) {
-        updatedCustom[s] = curr.quantity !== undefined ? Math.max(0, Number(curr.quantity) || 0) : 1;
-      }
-    });
+      const updatedCustom = { ...prevCustom, [supportName]: parsed };
+      allSupports.forEach((s) => {
+        if (updatedCustom[s] === undefined) {
+          updatedCustom[s] = curr.quantity !== undefined ? Math.max(0, Number(curr.quantity) || 0) : 1;
+        }
+      });
 
-    const maxQty = Math.max(1, ...Object.values(updatedCustom).map((q) => Number(q) || 0));
-    setCompanyConfigs({
-      ...companyConfigs,
-      [compId]: {
-        ...curr,
-        enabled: true,
-        quantity: maxQty,
-        customMaterials: updatedCustom,
-        fixedSupports: updatedCustom
-      }
+      const maxQty = Math.max(1, ...Object.values(updatedCustom).map((q) => Number(q) || 0));
+      return {
+        ...prevConfigs,
+        [compId]: {
+          ...curr,
+          enabled: true,
+          quantity: maxQty,
+          customMaterials: updatedCustom,
+          fixedSupports: updatedCustom
+        }
+      };
     });
   };
 
-  const handleSetAllSupportsQty = (compId, targetQty) => {
+  const handleSetAllSupportsQty = (setter, compId, targetQty) => {
     const compObj = companies.find((c) => c.id === compId);
     const allSupports = getCompanySupports(compObj);
     const updatedCustom = {};
     allSupports.forEach((s) => {
       updatedCustom[s] = targetQty;
     });
-    setCompanyConfigs({
-      ...companyConfigs,
+    setter((prevConfigs) => ({
+      ...prevConfigs,
       [compId]: {
         enabled: true,
         quantity: Math.max(1, targetQty),
         customMaterials: updatedCustom,
         fixedSupports: updatedCustom
       }
-    });
+    }));
   };
+
+  const renderCompanyConfigsGrid = (configsMap, setter) => (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {companies.map((comp) => {
+        const cfg = configsMap[comp.id] || { enabled: false, quantity: 1, customMaterials: null };
+        const companySupports = getCompanySupports(comp);
+
+        return (
+          <div
+            key={comp.id}
+            className={`p-3.5 rounded-xl border text-xs space-y-3 transition-all ${
+              cfg.enabled ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50/40 border-slate-200'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <label className="flex items-center space-x-2 font-bold text-slate-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={cfg.enabled}
+                  onChange={() => {
+                    const nextEnabled = !cfg.enabled;
+                    if (nextEnabled) {
+                      const initialCustom = {};
+                      companySupports.forEach((s) => {
+                        initialCustom[s] = 1;
+                      });
+                      setter((prevConfigs) => ({
+                        ...prevConfigs,
+                        [comp.id]: {
+                          enabled: true,
+                          quantity: 1,
+                          customMaterials: cfg.customMaterials || initialCustom,
+                          fixedSupports: cfg.fixedSupports || initialCustom
+                        }
+                      }));
+                    } else {
+                      setter((prevConfigs) => ({
+                        ...prevConfigs,
+                        [comp.id]: { ...cfg, enabled: false }
+                      }));
+                    }
+                  }}
+                  className="rounded text-indigo-600 focus:ring-indigo-500"
+                />
+                <span className="text-sm">{comp.name}</span>
+                {comp.code && (
+                  <span className="text-[10px] bg-slate-200/80 text-slate-600 px-1.5 py-0.5 rounded font-semibold uppercase">
+                    {comp.code}
+                  </span>
+                )}
+              </label>
+
+              {cfg.enabled && (
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSetAllSupportsQty(setter, comp.id, 1)}
+                    className="text-[10px] text-indigo-600 hover:underline font-semibold"
+                    title="Imposta tutti i supporti a 1"
+                  >
+                    Tutti a 1
+                  </button>
+                  <span className="text-slate-300">|</span>
+                  <button
+                    type="button"
+                    onClick={() => handleSetAllSupportsQty(setter, comp.id, 0)}
+                    className="text-[10px] text-slate-400 hover:text-rose-500 underline font-semibold"
+                    title="Azzera quantità supporti"
+                  >
+                    Azzera
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {cfg.enabled && (
+              <div className="space-y-2 pt-1 border-t border-indigo-100">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-bold text-slate-700">
+                    Supporti fissi in showroom del cliente:
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    (0 = non presente)
+                  </span>
+                </div>
+
+                {/* Mostra ESCLUSIVAMENTE i supporti fissi configurati sull'azienda */}
+                <div className="space-y-1.5">
+                  {companySupports.map((supportName) => {
+                    const currentVal =
+                      cfg.customMaterials && cfg.customMaterials[supportName] !== undefined
+                        ? cfg.customMaterials[supportName]
+                        : cfg.fixedSupports && cfg.fixedSupports[supportName] !== undefined
+                        ? cfg.fixedSupports[supportName]
+                        : cfg.quantity !== undefined
+                        ? cfg.quantity
+                        : 1;
+
+                    return (
+                      <div
+                        key={supportName}
+                        className={`p-2 rounded-lg border flex items-center justify-between gap-2 shadow-2xs transition-colors ${
+                          currentVal > 0
+                            ? 'bg-white border-slate-200 text-slate-800'
+                            : 'bg-slate-100/70 border-slate-200 text-slate-400'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span
+                            className={`font-semibold text-xs truncate ${
+                              currentVal > 0 ? 'text-slate-800' : 'text-slate-400 line-through'
+                            }`}
+                            title={supportName}
+                          >
+                            {supportName}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center space-x-1 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleSupportQtyChange(
+                                setter,
+                                comp.id,
+                                supportName,
+                                Math.max(0, Number(currentVal || 0) - 1)
+                              )
+                            }
+                            className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded text-xs"
+                            title="Diminuisci quantità"
+                          >
+                            -
+                          </button>
+                          <input
+                            type="number"
+                            min="0"
+                            value={currentVal}
+                            onChange={(e) =>
+                              handleSupportQtyChange(setter, comp.id, supportName, e.target.value)
+                            }
+                            className="w-12 p-1 border border-slate-300 rounded text-center font-bold text-xs bg-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleSupportQtyChange(
+                                setter,
+                                comp.id,
+                                supportName,
+                                Number(currentVal || 0) + 1
+                              )
+                            }
+                            className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded text-xs"
+                            title="Aumenta quantità"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 
   const filteredClients = clients
     .filter((c) => {
@@ -2550,24 +2738,7 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
     <div className="space-y-6">
       <form onSubmit={handleSaveClient} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="font-bold text-sm">
-            {editingClientId ? 'Modifica Cliente e Dotazione Supporti Fissi' : 'Nuovo Cliente'}
-          </h3>
-          {editingClientId && (
-            <button
-              type="button"
-              onClick={() => {
-                setEditingClientId(null);
-                setName('');
-                setProvince('');
-                setAgentId('');
-                setCompanyConfigs({});
-              }}
-              className="text-xs text-slate-400 hover:text-slate-600 underline"
-            >
-              Annulla Modifica
-            </button>
-          )}
+          <h3 className="font-bold text-sm">Nuovo Cliente</h3>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -2606,177 +2777,98 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
           <div className="text-xs font-bold text-slate-500 uppercase">
             Aziende Trattate & Supporti Fissi in Dotazione al Cliente:
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {companies.map((comp) => {
-              const cfg = companyConfigs[comp.id] || { enabled: false, quantity: 1, customMaterials: null };
-              const companySupports = getCompanySupports(comp);
-
-              return (
-                <div
-                  key={comp.id}
-                  className={`p-3.5 rounded-xl border text-xs space-y-3 transition-all ${
-                    cfg.enabled ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50/40 border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="flex items-center space-x-2 font-bold text-slate-800 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={cfg.enabled}
-                        onChange={() => {
-                          const nextEnabled = !cfg.enabled;
-                          if (nextEnabled) {
-                            const initialCustom = {};
-                            companySupports.forEach((s) => {
-                              initialCustom[s] = 1;
-                            });
-                            setCompanyConfigs({
-                              ...companyConfigs,
-                              [comp.id]: {
-                                enabled: true,
-                                quantity: 1,
-                                customMaterials: cfg.customMaterials || initialCustom,
-                                fixedSupports: cfg.fixedSupports || initialCustom
-                              }
-                            });
-                          } else {
-                            setCompanyConfigs({
-                              ...companyConfigs,
-                              [comp.id]: { ...cfg, enabled: false }
-                            });
-                          }
-                        }}
-                        className="rounded text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span className="text-sm">{comp.name}</span>
-                      {comp.code && (
-                        <span className="text-[10px] bg-slate-200/80 text-slate-600 px-1.5 py-0.5 rounded font-semibold uppercase">
-                          {comp.code}
-                        </span>
-                      )}
-                    </label>
-
-                    {cfg.enabled && (
-                      <div className="flex items-center space-x-2">
-                        <button
-                          type="button"
-                          onClick={() => handleSetAllSupportsQty(comp.id, 1)}
-                          className="text-[10px] text-indigo-600 hover:underline font-semibold"
-                          title="Imposta tutti i supporti a 1"
-                        >
-                          Tutti a 1
-                        </button>
-                        <span className="text-slate-300">|</span>
-                        <button
-                          type="button"
-                          onClick={() => handleSetAllSupportsQty(comp.id, 0)}
-                          className="text-[10px] text-slate-400 hover:text-rose-500 underline font-semibold"
-                          title="Azzera quantità supporti"
-                        >
-                          Azzera
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {cfg.enabled && (
-                    <div className="space-y-2 pt-1 border-t border-indigo-100">
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="font-bold text-slate-700">
-                          Supporti fissi in showroom del cliente:
-                        </span>
-                        <span className="text-[10px] text-slate-400">
-                          (0 = non presente)
-                        </span>
-                      </div>
-
-                      {/* Mostra ESCLUSIVAMENTE i supporti fissi configurati sull'azienda */}
-                      <div className="space-y-1.5">
-                        {companySupports.map((supportName) => {
-                          const currentVal =
-                            cfg.customMaterials && cfg.customMaterials[supportName] !== undefined
-                              ? cfg.customMaterials[supportName]
-                              : cfg.fixedSupports && cfg.fixedSupports[supportName] !== undefined
-                              ? cfg.fixedSupports[supportName]
-                              : cfg.quantity !== undefined
-                              ? cfg.quantity
-                              : 1;
-
-                          return (
-                            <div
-                              key={supportName}
-                              className={`p-2 rounded-lg border flex items-center justify-between gap-2 shadow-2xs transition-colors ${
-                                currentVal > 0
-                                    ? 'bg-white border-slate-200 text-slate-800'
-                                    : 'bg-slate-100/70 border-slate-200 text-slate-400'
-                              }`}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <span
-                                  className={`font-semibold text-xs truncate ${
-                                    currentVal > 0 ? 'text-slate-800' : 'text-slate-400 line-through'
-                                  }`}
-                                  title={supportName}
-                                >
-                                  {supportName}
-                                </span>
-                              </div>
-
-                              <div className="flex items-center space-x-1 flex-shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleSupportQtyChange(
-                                      comp.id,
-                                      supportName,
-                                      Math.max(0, Number(currentVal || 0) - 1)
-                                    )
-                                  }
-                                  className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded text-xs"
-                                  title="Diminuisci quantità"
-                                >
-                                  -
-                                </button>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  value={currentVal}
-                                  onChange={(e) =>
-                                    handleSupportQtyChange(comp.id, supportName, e.target.value)
-                                  }
-                                  className="w-12 p-1 border border-slate-300 rounded text-center font-bold text-xs bg-white"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleSupportQtyChange(
-                                      comp.id,
-                                      supportName,
-                                      Number(currentVal || 0) + 1
-                                    )
-                                  }
-                                  className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded text-xs"
-                                  title="Aumenta quantità"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          {renderCompanyConfigsGrid(companyConfigs, setCompanyConfigs)}
         </div>
 
         <button type="submit" className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm transition-colors">
-          {editingClientId ? 'Salva Modifiche Cliente' : '+ Salva Cliente'}
+          + Salva Cliente
         </button>
       </form>
+
+      {editingClientId && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setEditingClientId(null)}
+        >
+          <form
+            onSubmit={handleSaveEditedClient}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden"
+          >
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-white">
+              <h3 className="font-bold text-sm text-slate-900">
+                Modifica Cliente e Dotazione Supporti Fissi
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingClientId(null)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-lg font-bold transition-colors"
+                title="Chiudi"
+                aria-label="Chiudi"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4 flex-1">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <input
+                  type="text"
+                  required
+                  placeholder="Ragione Sociale"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="p-2.5 text-xs border border-slate-200 rounded-xl"
+                />
+                <input
+                  type="text"
+                  required
+                  placeholder="Provincia (es. TV)"
+                  value={editProvince}
+                  onChange={(e) => setEditProvince(e.target.value)}
+                  className="p-2.5 text-xs border border-slate-200 rounded-xl"
+                />
+                <select
+                  required
+                  value={editAgentId}
+                  onChange={(e) => setEditAgentId(e.target.value)}
+                  className="p-2.5 text-xs border border-slate-200 rounded-xl bg-white"
+                >
+                  <option value="">-- Assegna ad Agente --</option>
+                  {fieldAgents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-bold text-slate-500 uppercase">
+                  Aziende Trattate & Supporti Fissi in Dotazione al Cliente:
+                </div>
+                {renderCompanyConfigsGrid(editCompanyConfigs, setEditCompanyConfigs)}
+              </div>
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditingClientId(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-200/70 rounded-xl transition-colors"
+              >
+                Annulla
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm transition-colors"
+              >
+                Salva Modifiche Cliente
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
         <div className="p-4 border-b border-slate-100 space-y-3">
@@ -2868,30 +2960,44 @@ function ClientsManagerTab({ agents, companies, updates, clients, setClients, se
                     <td className="p-3">{c.province}</td>
                     <td className="p-3 text-indigo-600 font-medium">{ag ? ag.name : '-'}</td>
                     <td className="p-3">
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {(c.companyIds || []).map((id) => {
                           const comp = companies.find((co) => co.id === id);
                           if (!comp) return null;
                           const cfg = c.companyConfigs?.[id] || {};
                           const custom = cfg.customMaterials || cfg.fixedSupports;
 
-                          let label = `${cfg.quantity || 1} kit`;
+                          let compactLabel = `${comp.name}: ${cfg.quantity || 1} kit`;
+                          let tooltipText = compactLabel;
+                          let isZero = false;
+
                           if (custom && typeof custom === 'object') {
                             const activeEntries = Object.entries(custom).filter(([, q]) => Number(q) > 0);
                             if (activeEntries.length > 0) {
-                              label = activeEntries.map(([sName, q]) => `${q}x ${sName}`).join(', ');
+                              compactLabel = `${comp.name}: ${activeEntries.length} ${
+                                activeEntries.length === 1 ? 'supporto' : 'supporti'
+                              }`;
+                              tooltipText = `${comp.name}: ${activeEntries
+                                .map(([sName, q]) => `${q}x ${sName}`)
+                                .join(', ')}`;
                             } else {
-                              label = 'Nessun supporto';
+                              compactLabel = `${comp.name}: 0 supporti`;
+                              tooltipText = `${comp.name}: Nessun supporto attivo`;
+                              isZero = true;
                             }
                           }
 
                           return (
                             <span
                               key={id}
-                              className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold border border-indigo-100"
-                              title={`${comp.name}: ${label}`}
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold border whitespace-nowrap ${
+                                isZero
+                                  ? 'bg-slate-100 text-slate-500 border-slate-200'
+                                  : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                              }`}
+                              title={tooltipText}
                             >
-                              {comp.name}: {label}
+                              {compactLabel}
                             </span>
                           );
                         })}
